@@ -1,2 +1,3 @@
-tar.gz: .
+tar.gz: v@version@:.
+diff: v@version@:. . name=@name@-@version@-alt.patch
 spec: .gear/buildcache.spec

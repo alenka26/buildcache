@@ -10,6 +10,8 @@ Url: https://github.com/mbitsnbites/buildcache
 Source: %name-%version.tar.gz
 Packager: Ivan Savin <svn17@altlinux.org>
 
+Patch: %name-%version-alt.patch
+
 BuildRequires: cmake gcc-c++
 
 %description
@@ -19,6 +21,7 @@ unnecessary re-compilations, and thereby speeding up the build process.
 
 %prep
 %setup
+%patch -p1
 
 %build
 cd src
