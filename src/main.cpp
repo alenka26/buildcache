@@ -40,8 +40,8 @@
 #include <cjson/cJSON.h>
 #include <hiredis/hiredis.h>
 #include <lua.h>
-#include <lz4/lz4.h>
-#include <zstd/zstd.h>
+#include <lz4.h>
+#include <zstd.h>
 
 #include <iostream>
 #include <memory>

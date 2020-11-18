@@ -22,8 +22,8 @@
 #include <config/configuration.hpp>
 
 #include <cstdint>
-#include <lz4/lz4.h>
-#include <zstd/zstd.h>
+#include <lz4.h>
+#include <zstd.h>
 
 #include <algorithm>
 #include <functional>
