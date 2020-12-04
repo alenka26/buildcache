@@ -7,6 +7,10 @@ It is similar in spirit to [ccache](https://ccache.samba.org/),
 [sccache](https://github.com/mozilla/sccache) and
 [clcache](https://github.com/frerich/clcache).
 
+## Download
+
+Pre-built binaries of BuildCache can be downloaded [here](https://github.com/mbitsnbites/buildcache/releases/latest).
+
 ## Features
 
 * Works on different operating systems:
@@ -33,14 +37,14 @@ Currently the following compilers and languages are supported:
 
 | Compiler | Languages | Support |
 | --- | --- | --- |
-| GCC | C, C++ | Built-in |
-| Clang | C, C++ | Built-in |
-| Microsoft Visual C++ | C, C++ | Built-in |
-| Green Hills Software | C, C++ | Built-in |
-| TI TMS320C6000™ Optimizing Compiler | C, C++ | Built-in |
-| TI ARM Optimizing C/C++ Compiler | C, C++ | Built-in |
+| [GCC](https://gcc.gnu.org/) | C, C++ | Built-in |
+| [Clang](https://clang.llvm.org/) | C, C++ | Built-in |
+| [Microsoft Visual C++](https://visualstudio.microsoft.com/vs/features/cplusplus/) | C, C++ | Built-in |
+| [Green Hills Optimizing Compilers](https://www.ghs.com/products/compiler.html) | C, C++ | Built-in |
+| [TI TMS320C6000 Optimizing Compiler](http://www.ti.com/tool/C6000-CGT) | C, C++ | Built-in |
+| [TI ARM Optimizing C/C++ Compiler](http://www.ti.com/tool/ARM-CGT) | C, C++ | Built-in |
 | TI ARP32 Optimizing C/C++ Compiler | C, C++ | Built-in |
-| scan-build static analyzer | C, C++ | Built-in |
+| [scan-build static analyzer](https://clang-analyzer.llvm.org/scan-build.html) | C, C++ | Built-in |
 
 New backends are relatively easy to add, both as built-in wrappers in C++ and as
 [Lua wrappers](doc/lua.md).
@@ -51,36 +55,19 @@ BuildCache has been used daily in production environments for years with near
 zero issues (any problem that has emereged has of course been fixed), which
 gives it a good track record.
 
-With that said, BuildCache is still considered to be under development.
+With that said, BuildCache is still considered to be under development and
+things like configuration parameters and cache formats may change between 0.x
+versions.
 
-## Building
+Once BuildCache has reached version 1.0, all releases will be fully backwards
+compatible within a major version (e.g. 1.x).
 
-Use [CMake](https://cmake.org/) and your favorite C++ compiler to build the
-BuildCache program:
+## Documentation
 
-```bash
-$ mkdir build
-$ cd build
-$ cmake -DCMAKE_BUILD_TYPE=Release ../src
-$ cmake --build .
-```
-
-Note: For S3 support on non-macOS/Windows systems you need OpenSSL (e.g. install
-`libssl-dev` on Ubuntu before running CMake).
-
-## Usage
-
-See [Using BuildCache](doc/usage.md).
-
-## Configuration
-
-See [Configruation](doc/configuration.md).
-
-## Using custom Lua plugins
-
-See [Using custom Lua plugins](doc/lua.md).
-
-## Contributing
-
-See [Contributing to BuildCache](doc/contributing.md).
+* [Building BuildCache](doc/building.md)
+* [Using BuildCache](doc/usage.md)
+* [Configuration](doc/configuration.md)
+* [Using custom Lua plugins](doc/lua.md)
+* [Contributing to BuildCache](doc/contributing.md)
+* [Benchmarks](doc/benchmarks.md)
 

@@ -20,11 +20,15 @@
 #include <wrappers/msvc_wrapper.hpp>
 
 #include <base/debug_utils.hpp>
+#include <base/env_utils.hpp>
 #include <base/unicode_utils.hpp>
 #include <config/configuration.hpp>
 #include <sys/sys_utils.hpp>
 
+#include <codecvt>
 #include <cstdlib>
+#include <fstream>
+#include <locale>
 #include <stdexcept>
 
 namespace bcache {
@@ -32,9 +36,19 @@ namespace {
 // Tick this to a new number if the format has changed in a non-backwards-compatible way.
 const std::string HASH_VERSION = "1";
 
+// When cl.exe is started from Visual Studio, it explicitly sends certain output to the IDE
+// process. This prevents capturing output otherwise written to stderr or stdout. The
+// redirection is controlled by the VS_UNICODE_OUTPUT environment variable.
+const std::string ENV_VS_OUTPUT_REDIRECTION = "VS_UNICODE_OUTPUT";
+
 bool is_source_file(const std::string& arg) {
   const auto ext = lower_case(file::get_extension(arg));
   return ((ext == ".cpp") || (ext == ".cc") || (ext == ".cxx") || (ext == ".c"));
+}
+
+bool is_object_file(const std::string& file_ext) {
+  const auto ext = lower_case(file_ext);
+  return ((ext == ".obj") || (ext == ".o"));
 }
 
 bool arg_starts_with(const std::string& str, const std::string& sub_str) {
@@ -54,9 +68,8 @@ bool arg_equals(const std::string& str, const std::string& sub_str) {
 std::string drop_leading_colon(const std::string& s) {
   if (s.length() > 0 && s[0] == ':') {
     return s.substr(1);
-  } else {
-    return s;
   }
+  return s;
 }
 
 string_list_t make_preprocessor_cmd(const string_list_t& args) {
@@ -106,6 +119,42 @@ string_list_t make_preprocessor_cmd(const string_list_t& args) {
 msvc_wrapper_t::msvc_wrapper_t(const string_list_t& args) : program_wrapper_t(args) {
 }
 
+void msvc_wrapper_t::resolve_args() {
+  // Iterate over all args and load any response files that we encounter.
+  m_resolved_args.clear();
+  for (const auto& arg : m_args) {
+    if (arg.substr(0, 1) == "@") {
+      std::ifstream file(arg.substr(1));
+      if (file.is_open()) {
+        // Look for UTF-16 BOM.
+        int byte0 = file.get();
+        int byte1 = file.get();
+        if ((byte0 == 0xff && byte1 == 0xfe) || (byte0 == 0xfe && byte1 == 0xff)) {
+          // Reopen stream knowing the file is UTF-16 encoded.
+          file.close();
+          std::wifstream wfile(arg.substr(1), std::ios::binary);
+          wfile.imbue(std::locale(wfile.getloc(),
+                                  new std::codecvt_utf16<wchar_t, 0x10ffff, std::consume_header>));
+          std::wstring wline;
+          while (std::getline(wfile, wline)) {
+            m_resolved_args += string_list_t::split_args(ucs2_to_utf8(wline));
+          }
+        } else {
+          // Assume UTF-8.
+          file.clear();
+          file.seekg(0);
+          std::string line;
+          while (std::getline(file, line)) {
+            m_resolved_args += string_list_t::split_args(line);
+          }
+        }
+      }
+    } else {
+      m_resolved_args += arg;
+    }
+  }
+}
+
 bool msvc_wrapper_t::can_handle_command() {
   // Is this the right compiler?
   const auto cmd = lower_case(file::get_file_part(m_args[0], false));
@@ -121,23 +170,24 @@ std::string msvc_wrapper_t::preprocess_source() {
   // Check if this is a compilation command that we support.
   auto is_object_compilation = false;
   auto has_object_output = false;
-  for (const auto& arg : m_args) {
+  for (const auto& arg : m_resolved_args) {
     if (arg_equals(arg, "c")) {
       is_object_compilation = true;
-    } else if (arg_starts_with(arg, "Fo") && (file::get_extension(arg) == ".obj")) {
+    } else if (arg_starts_with(arg, "Fo") && (is_object_file(file::get_extension(arg)))) {
       has_object_output = true;
     } else if (arg_equals(arg, "Zi") || arg_equals(arg, "ZI")) {
       throw std::runtime_error("PDB generation is not supported.");
-    } else if (arg.substr(0, 1) == "@") {
-      throw std::runtime_error("Response files are currently not supported.");
     }
   }
   if ((!is_object_compilation) || (!has_object_output)) {
     throw std::runtime_error("Unsupported complation command.");
   }
 
+  // Disable unwanted printing of source file name in Visual Studio.
+  scoped_unset_env_t scoped_off(ENV_VS_OUTPUT_REDIRECTION);
+
   // Run the preprocessor step.
-  const auto preprocessor_args = make_preprocessor_cmd(m_args);
+  const auto preprocessor_args = make_preprocessor_cmd(m_resolved_args);
   auto result = sys::run(preprocessor_args);
   if (result.return_code != 0) {
     throw std::runtime_error("Preprocessing command was unsuccessful.");
@@ -151,11 +201,11 @@ string_list_t msvc_wrapper_t::get_relevant_arguments() {
   string_list_t filtered_args;
 
   // The first argument is the compiler binary without the path.
-  filtered_args += file::get_file_part(m_args[0]);
+  filtered_args += file::get_file_part(m_resolved_args[0]);
 
   // Note: We always skip the first arg since we have handled it already.
   bool skip_next_arg = true;
-  for (const auto& arg : m_args) {
+  for (const auto& arg : m_resolved_args) {
     if (!skip_next_arg) {
       // Generally unwanted argument (things that will not change how we go from preprocessed code
       // to binary object files)?
@@ -197,8 +247,11 @@ std::string msvc_wrapper_t::get_program_id() {
   // Get the version string for the compiler.
   // Just calling "cl.exe" will return the version information. Note, though, that the version
   // information is given on stderr.
+  scoped_unset_env_t scoped_off(ENV_VS_OUTPUT_REDIRECTION);
+
   string_list_t version_args;
   version_args += m_args[0];
+
   const auto result = sys::run(version_args, true);
   if (result.std_err.empty()) {
     throw std::runtime_error("Unable to get the compiler version information string.");
@@ -210,8 +263,8 @@ std::string msvc_wrapper_t::get_program_id() {
 std::map<std::string, expected_file_t> msvc_wrapper_t::get_build_files() {
   std::map<std::string, expected_file_t> files;
   auto found_object_file = false;
-  for (const auto& arg : m_args) {
-    if (arg_starts_with(arg, "Fo") && (file::get_extension(arg) == ".obj")) {
+  for (const auto& arg : m_resolved_args) {
+    if (arg_starts_with(arg, "Fo") && (is_object_file(file::get_extension(arg)))) {
       if (found_object_file) {
         throw std::runtime_error("Only a single target object file can be specified.");
       }
@@ -224,4 +277,11 @@ std::map<std::string, expected_file_t> msvc_wrapper_t::get_build_files() {
   }
   return files;
 }
+
+sys::run_result_t msvc_wrapper_t::run_for_miss() {
+  // Capture printed source file name (stdout) in cache entry.
+  scoped_unset_env_t scoped_off(ENV_VS_OUTPUT_REDIRECTION);
+  return program_wrapper_t::run_for_miss();
+}
+
 }  // namespace bcache

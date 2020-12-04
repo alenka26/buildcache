@@ -23,15 +23,20 @@
 #include <base/debug_utils.hpp>
 #include <base/hasher.hpp>
 #include <cache/cache_entry.hpp>
+#include <cache/data_store.hpp>
 #include <config/configuration.hpp>
 #include <sys/perf_utils.hpp>
 #include <sys/sys_utils.hpp>
 
 #include <iostream>
 #include <map>
+#include <sstream>
 
 namespace bcache {
 namespace {
+std::string PROGRAM_ID_CACHE_NAME = "prgid";
+time::seconds_t PROGRAM_ID_CACHE_LIFE_TIME = 300;  // Five minutes.
+
 /// @brief A helper class for managing wrapper capabilities.
 class capabilities_t {
 public:
@@ -86,6 +91,13 @@ bool program_wrapper_t::handle_command(int& return_code) {
     // Start a hash.
     hasher_t hasher;
 
+    // Add additional file contents to the resulting hash.
+    PERF_START(HASH_EXTRA_FILES);
+    for (const auto& extra_file : bcache::config::hash_extra_files()) {
+      hasher.update_from_file(extra_file);
+    }
+    PERF_STOP(HASH_EXTRA_FILES);
+
     // Hash the preprocessed file contents.
     PERF_START(PREPROCESS);
     hasher.update(preprocess_source());
@@ -99,7 +111,7 @@ bool program_wrapper_t::handle_command(int& return_code) {
 
     // Hash the program identification (version string or similar).
     PERF_START(GET_PRG_ID);
-    hasher.update(get_program_id());
+    hasher.update(get_program_id_cached());
     PERF_STOP(GET_PRG_ID);
 
     // Finalize the hash.
@@ -121,8 +133,20 @@ bool program_wrapper_t::handle_command(int& return_code) {
                        capabilites.create_target_dirs(),
                        return_code)) {
       return true;
-    } else {
-      debug::log(debug::INFO) << "Cache miss (" << hash.as_string() << ")";
+    }
+
+    debug::log(debug::INFO) << "Cache miss (" << hash.as_string() << ")";
+
+    // If the "terminate on a miss" mode is enabled and we didn't find an entry in the cache, we
+    // exit with an error code.
+    if (config::terminate_on_miss()) {
+      string_list_t files;
+      for (const auto& file : expected_files) {
+        files += file.second.path();
+      }
+      debug::log(debug::INFO) << "Terminating! Expected files: " << files.join(", ");
+      return_code = 1;
+      return true;  // Don't fall back to running the command (we have "handled" it).
     }
 
     // Run the actual program command to produce the build file(s).
@@ -142,7 +166,8 @@ bool program_wrapper_t::handle_command(int& return_code) {
     // Create a new entry in the cache.
     // Note: We do not want to create cache entries for failed program runs. We could, but that
     // would run the risk of caching intermittent faults for instance.
-    if (result.return_code == 0) {
+    // And we do not want to create cache entries when the readonly mode is enabled.
+    if (result.return_code == 0 && !config::read_only()) {
       // Add the entry to the cache.
       const cache_entry_t entry(
           file_ids,
@@ -216,6 +241,37 @@ std::map<std::string, expected_file_t> program_wrapper_t::get_build_files() {
 sys::run_result_t program_wrapper_t::run_for_miss() {
   // Default: Run the program with the configured prefix.
   return sys::run_with_prefix(m_args, false);
+}
+
+std::string program_wrapper_t::get_program_id_cached() {
+  try {
+    // Get an ID of the program executable, based on its path, size and modification time.
+    const auto file_info = file::get_file_info(m_args[0]);
+    std::ostringstream ss;
+    ss << file_info.path() << ":" << file_info.size() << ":" << file_info.modify_time();
+    hasher_t hasher;
+    hasher.update(ss.str());
+    const auto key = hasher.final().as_string();
+
+    // Look up the program ID in the data store.
+    data_store_t store(PROGRAM_ID_CACHE_NAME);
+    const auto item = store.get_item(key);
+    if (item.is_valid()) {
+      debug::log(debug::DEBUG) << "Found cached program ID for " << m_args[0];
+      return item.value();
+    }
+
+    // We had a miss. Query the program ID and add it to the meta store.
+    debug::log(debug::DEBUG) << "Program ID cache miss for " << m_args[0];
+    auto program_id = get_program_id();
+    store.store_item(key, program_id, PROGRAM_ID_CACHE_LIFE_TIME);
+    return program_id;
+  } catch (std::exception& e) {
+    // Something went wrong. Fall back to querying the program ID.
+    debug::log(debug::ERROR) << "Unable to get cached program ID: " << e.what();
+  }
+
+  return get_program_id();
 }
 
 }  // namespace bcache

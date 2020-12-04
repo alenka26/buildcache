@@ -34,6 +34,9 @@ add_library(doctest
   doctest/doctest_main.cpp
   )
 target_include_directories(doctest INTERFACE .)
+if(MINGW)
+  target_link_libraries(doctest mingw_stdthreads)
+endif()
 
 #---------------------------------------------------------------------------------------------------
 # cJSON
@@ -44,12 +47,10 @@ add_library(cjson
 target_include_directories(cjson INTERFACE .)
 
 #---------------------------------------------------------------------------------------------------
-# MD4
+# xxHash
 #---------------------------------------------------------------------------------------------------
-add_library(md4
-  md4/md4.c
-  )
-target_include_directories(md4 INTERFACE .)
+add_library(xxhash INTERFACE)
+target_include_directories(xxhash INTERFACE .)
 
 #---------------------------------------------------------------------------------------------------
 # cpp-base64
@@ -63,8 +64,9 @@ target_include_directories(cpp-base64 INTERFACE .)
 # mingw-std-threads (implements std::thread for MinGW).
 #---------------------------------------------------------------------------------------------------
 if(MINGW)
-  add_library(mingw_std_threads INTERFACE)
-  target_include_directories(mingw_std_threads INTERFACE .)
+  option(MINGW_STDTHREADS_GENERATE_STDHEADERS "" ON)
+  add_subdirectory(mingw-std-threads)
+  target_include_directories(mingw_stdthreads INTERFACE .)
 endif()
 
 #---------------------------------------------------------------------------------------------------

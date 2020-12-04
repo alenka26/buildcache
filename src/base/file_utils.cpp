@@ -17,16 +17,16 @@
 //  3. This notice may not be removed or altered from any source distribution.
 //--------------------------------------------------------------------------------------------------
 
-#include <base/file_utils.hpp>
-
 #include <base/debug_utils.hpp>
 #include <base/env_utils.hpp>
+#include <base/file_utils.hpp>
 #include <base/string_list.hpp>
 #include <base/unicode_utils.hpp>
 
 #include <cstdint>
 #include <cstdio>
 #include <ctime>
+
 #include <algorithm>
 #include <atomic>
 #include <stdexcept>
@@ -39,11 +39,11 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
-#include <windows.h>
 #include <direct.h>
 #include <shlobj.h>
-#include <userenv.h>
 #include <sys/utime.h>
+#include <userenv.h>
+#include <windows.h>
 #undef ERROR
 #undef log
 #else
@@ -51,15 +51,15 @@
 #include <dirent.h>
 #include <limits.h>
 #include <stdlib.h>
+#include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/types.h>
-#include <sys/stat.h>
 #include <unistd.h>
 #include <utime.h>
 #endif
 
-#include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/types.h>
 
 // S_ISDIR/S_ISREG are not defined by MSVC, but _S_IFDIR/_S_IFREG are.
 #if defined(_WIN32) && !defined(S_ISDIR)
@@ -102,8 +102,8 @@ int get_process_id() {
 
 std::string::size_type get_last_path_separator_pos(const std::string& path) {
 #if defined(_WIN32)
-  const auto pos1 = path.rfind("/");
-  const auto pos2 = path.rfind("\\");
+  const auto pos1 = path.rfind('/');
+  const auto pos2 = path.rfind('\\');
   std::string::size_type pos;
   if (pos1 == std::string::npos) {
     pos = pos2;
@@ -113,7 +113,7 @@ std::string::size_type get_last_path_separator_pos(const std::string& path) {
     pos = std::max(pos1, pos2);
   }
 #else
-  const auto pos = path.rfind(PATH_SEPARATOR);
+  const auto pos = path.rfind(PATH_SEPARATOR_CHR);
 #endif
   return pos;
 }
@@ -122,13 +122,6 @@ std::string::size_type get_last_path_separator_pos(const std::string& path) {
 int64_t two_dwords_to_int64(const DWORD low, const DWORD high) {
   return static_cast<int64_t>(static_cast<uint64_t>(static_cast<uint32_t>(low)) |
                               (static_cast<uint64_t>(static_cast<uint32_t>(high)) << 32));
-}
-
-file_info_t::time_t win32_filetime_as_unix_epoch(const FILETIME& file_time) {
-  // The FILETIME represents the number of 100-nanosecond intervals since January 1, 1601 (UTC).
-  // I.e. the Windows epoch starts 11644473600 seconds before the UNIX epoch.
-  const auto t64 = two_dwords_to_int64(file_time.dwLowDateTime, file_time.dwHighDateTime);
-  return static_cast<file_info_t::time_t>((t64 / 10000000L) - 11644473600L);
 }
 #endif
 
@@ -167,11 +160,11 @@ std::string to_id_part(const uint64_t x) {
   static const auto NUM_CHARS = static_cast<uint64_t>(sizeof(CHARS) / sizeof(CHARS[0]) - 1);
 
   std::string part;
-  if (x == 0u) {
+  if (x == 0U) {
     part += 'u';
   } else {
     auto q = x;
-    while (q != 0u) {
+    while (q != 0U) {
       part += CHARS[q % NUM_CHARS];
       q = q / NUM_CHARS;
     }
@@ -179,6 +172,57 @@ std::string to_id_part(const uint64_t x) {
 
   return part;
 }
+
+/// @brief Get implicit file extensions for executable files.
+///
+/// The list is on the form ["", ".foo", ".bar", ...]. The first item is an empty string
+/// (representing "no extra extension"), and the list is guaranteed to contain at least one item.
+///
+/// @returns a list of valid extensions.
+string_list_t get_exe_extensions() {
+#if defined(_WIN32)
+  // Use PATHEXT to determine valid executable file extensions. For more info, see:
+  // https://docs.microsoft.com/en-us/windows-server/administration/windows-commands/start
+  std::string path_ext_str = ".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC";
+  const env_var_t path_ext_env("PATHEXT");
+  if (path_ext_env) {
+    path_ext_str = path_ext_env.as_string();
+  }
+
+  // Note: We use lower case since we want to do case insensitive string compares.
+  return string_list_t({""}) + string_list_t(lower_case(path_ext_str), ";");
+#else
+  // On POSIX systems, there is no such thing as an exe extension that gets implicitly added when
+  // invoking a command.
+  return string_list_t({""});
+#endif
+}
+
+bool is_absolute_path(const std::string& path) {
+#ifdef _WIN32
+  const bool is_abs_drive =
+      (path.size() >= 3) && (path[1] == ':') && ((path[2] == '\\') || (path[2] == '/'));
+  const bool is_abs_net = (path.size() >= 2) && (path[0] == '\\') && (path[1] == '\\');
+  return is_abs_drive || is_abs_net;
+#else
+  return (!path.empty()) && (path[0] == PATH_SEPARATOR_CHR);
+#endif
+}
+
+bool is_relateive_path(const std::string& path) {
+  return get_last_path_separator_pos(path) != std::string::npos;
+}
+
+#if defined(_WIN32)
+std::string get_cwd() {
+  WCHAR buf[MAX_PATH + 1] = {0};
+  DWORD path_len = GetCurrentDirectoryW(MAX_PATH + 1, buf);
+  if (path_len > 0) {
+    return ucs2_to_utf8(std::wstring(buf, path_len));
+  }
+  return std::string();
+}
+#endif
 
 }  // namespace
 
@@ -203,8 +247,8 @@ tmp_file_t::~tmp_file_t() {
 }
 
 file_info_t::file_info_t(const std::string& path,
-                         const file_info_t::time_t modify_time,
-                         const file_info_t::time_t access_time,
+                         const time::seconds_t modify_time,
+                         const time::seconds_t access_time,
                          const int64_t size,
                          const bool is_dir)
     : m_path(path),
@@ -226,7 +270,7 @@ std::string append_path(const std::string& path, const char* append) {
 }
 
 std::string get_extension(const std::string& path) {
-  const auto pos = path.rfind(".");
+  const auto pos = path.rfind('.');
 
   // Check that we did not pick up an extension before the last path separator.
   const auto sep_pos = get_last_path_separator_pos(path);
@@ -238,7 +282,7 @@ std::string get_extension(const std::string& path) {
 }
 
 std::string change_extension(const std::string& path, const std::string& new_ext) {
-  const auto pos = path.rfind(".");
+  const auto pos = path.rfind('.');
 
   // Check that we did not pick up an extension before the last path separator.
   const auto sep_pos = get_last_path_separator_pos(path);
@@ -252,7 +296,7 @@ std::string change_extension(const std::string& path, const std::string& new_ext
 std::string get_file_part(const std::string& path, const bool include_ext) {
   const auto pos = get_last_path_separator_pos(path);
   const auto file_name = (pos != std::string::npos) ? path.substr(pos + 1) : path;
-  const auto ext_pos = file_name.rfind(".");
+  const auto ext_pos = file_name.rfind('.');
   return (include_ext || (ext_pos == std::string::npos) || (ext_pos == 0))
              ? file_name
              : file_name.substr(0, ext_pos);
@@ -331,25 +375,32 @@ std::string get_user_home_dir() {
 #endif
 }
 
-bool is_absolute_path(const std::string& path) {
-#ifdef _WIN32
-  const bool is_abs_drive =
-      (path.size() >= 3) && (path[1] == ':') && ((path[2] == '\\') || (path[2] == '/'));
-  const bool is_abs_net = (path.size() >= 2) && (path[0] == '\\') && (path[1] == '\\');
-  return is_abs_drive || is_abs_net;
-#else
-  return (path.size() >= 1) && (path[0] == PATH_SEPARATOR_CHR);
-#endif
-}
-
 std::string resolve_path(const std::string& path) {
 #if defined(_WIN32)
-  // TODO(m): Implement me!
-  return path;
+  auto* handle = CreateFileW(utf8_to_ucs2(path).c_str(),
+                             0,
+                             FILE_SHARE_READ | FILE_SHARE_WRITE,
+                             nullptr,
+                             OPEN_EXISTING,
+                             FILE_ATTRIBUTE_NORMAL,
+                             nullptr);
+  if (INVALID_HANDLE_VALUE != handle) {
+    std::wstring resolved_path;
+    auto resolved_size = GetFinalPathNameByHandleW(handle, nullptr, 0, FILE_NAME_NORMALIZED);
+    resolved_path.resize(resolved_size - 1);  // terminating null character is added automatically
+
+    GetFinalPathNameByHandleW(handle, &resolved_path[0], resolved_size, FILE_NAME_NORMALIZED);
+    CloseHandle(handle);
+    if (resolved_path.substr(0, 4) == LR"(\\?\)") {
+      resolved_path = resolved_path.substr(4);
+    }
+    return ucs2_to_utf8(resolved_path);
+  }
+  return std::string();
 #else
   auto* char_ptr = realpath(path.c_str(), nullptr);
   if (char_ptr != nullptr) {
-    const auto result = std::string(char_ptr);
+    auto result = std::string(char_ptr);
     std::free(char_ptr);
     return result;
   }
@@ -358,43 +409,65 @@ std::string resolve_path(const std::string& path) {
 }
 
 std::string find_executable(const std::string& path, const std::string& exclude) {
-  auto file_to_find = path;
+  const auto extensions = get_exe_extensions();
 
-  // TODO(m): For Windows we should also look for files with ".exe" endings (e.g. if you have only
-  // specified "gcc", we should find "gcc.exe"). Furthermore we should also prepend the current
-  // working directory to the PATH, as Windows searches the CWD before searching the PATH.
+  std::string file_to_find;
 
   // Handle absolute and relative paths. Examples:
   //  - "C:\Foo\foo.exe"
   //  - "somedir/../mysubdir/foo"
-  if (is_absolute_path(file_to_find) ||
-      (get_last_path_separator_pos(file_to_find) != std::string::npos)) {
-    // Return the full path unless it points to the excluded executable.
-    const auto true_path = resolve_path(file_to_find);
-    if (true_path.empty()) {
-      throw std::runtime_error("Could not resolve absolute path for the executable file.");
-    }
-    if (lower_case(get_file_part(true_path, false)) != exclude) {
-      debug::log(debug::DEBUG) << "Found exe: " << true_path << " (looked for " << path << ")";
-      return true_path;
-    }
+  if (is_absolute_path(path) || is_relateive_path(path)) {
+    for (const auto& ext : extensions) {
+      const auto path_with_ext = path + ext;
 
-    // ...otherwise search for the named file (which should be a symlink) in the PATH.
-    file_to_find = get_file_part(file_to_find);
+      // Return the full path unless it points to the excluded executable.
+      auto true_path = resolve_path(path_with_ext);
+      if (true_path.empty()) {
+        // Unable to resolve. Try next ext.
+        continue;
+      }
+      if (lower_case(get_file_part(true_path, false)) != exclude) {
+        debug::log(debug::DEBUG) << "Found exe: " << true_path << " (looked for " << path << ")";
+        return true_path;
+      }
+
+      // ...otherwise search for the named file (which should be a symlink) in the PATH.
+      file_to_find = get_file_part(path_with_ext);
+      break;
+    }
+  } else {
+    // The path is just a file name without a path.
+    file_to_find = path;
   }
 
-  // Get the PATH environment variable.
-  const auto search_path = string_list_t(get_env("PATH"), PATH_DELIMITER);
+  if (!file_to_find.empty()) {
+    // Get the PATH environment variable.
+    string_list_t search_path;
+#if defined(_WIN32)
+    {
+      // For Windows we prepend the current working directory to the PATH, as Windows searches the
+      // CWD before searching the PATH.
+      const auto cwd = get_cwd();
+      if (!cwd.empty()) {
+        search_path += cwd;
+      }
+    }
+#endif
+    search_path += string_list_t(get_env("PATH"), PATH_DELIMITER);
 
-  // Iterate the path from start to end and see if we can find the executable file.
-  for (const auto& base_path : search_path) {
-    const auto true_path = resolve_path(append_path(base_path, file_to_find));
-    if ((!true_path.empty()) && file_exists(true_path)) {
-      // Check that this is not the excluded file name.
-      if (lower_case(get_file_part(true_path, false)) != exclude) {
-        debug::log(debug::DEBUG) << "Found exe: " << true_path << " (looked for " << file_to_find
-                                 << ")";
-        return true_path;
+    // Iterate the path from start to end and see if we can find the executable file.
+    for (const auto& base_path : search_path) {
+      for (const auto& ext : extensions) {
+        const auto file_name = file_to_find + ext;
+        auto true_path = resolve_path(append_path(base_path, file_name));
+        if ((!true_path.empty()) && file_exists(true_path)) {
+          // Check that this is not the excluded file name.
+          if (lower_case(get_file_part(true_path, false)) != exclude) {
+            debug::log(debug::DEBUG)
+                << "Found exe: " << true_path << " (looked for " << file_name << ")";
+            return true_path;
+          }
+        }
       }
     }
   }
@@ -521,9 +594,9 @@ void copy(const std::string& from_path, const std::string& to_path) {
       static const int BUFFER_SIZE = 8192;
       std::vector<std::uint8_t> buf(BUFFER_SIZE);
       success = true;
-      while (!std::feof(from_file)) {
+      while (std::feof(from_file) == 0) {
         const auto bytes_read = std::fread(buf.data(), 1, buf.size(), from_file);
-        if (bytes_read == 0u) {
+        if (bytes_read == 0U) {
           break;
         }
         const auto bytes_written = std::fwrite(buf.data(), 1, bytes_read, to_file);
@@ -563,19 +636,21 @@ void link_or_copy(const std::string& from_path, const std::string& to_path) {
   success = (link(from_path.c_str(), to_path.c_str()) == 0);
 #endif
 
-  // Touch the file to update the modification time.
-  if (success) {
-#ifdef _WIN32
-    success = (_wutime64(utf8_to_ucs2(to_path).c_str(), nullptr) == 0);
-#else
-    success = (utime(to_path.c_str(), nullptr) == 0);
-#endif
-  }
-
   // If the hard link failed, make a full copy instead.
   if (!success) {
     debug::log(debug::DEBUG) << "Hard link failed - copying instead.";
     copy(from_path, to_path);
+  }
+}
+
+void touch(const std::string& path) {
+#ifdef _WIN32
+  bool success = (_wutime64(utf8_to_ucs2(path).c_str(), nullptr) == 0);
+#else
+  bool success = (utime(path.c_str(), nullptr) == 0);
+#endif
+  if (!success) {
+    throw std::runtime_error("Unable to touch the file.");
   }
 }
 
@@ -604,7 +679,7 @@ std::string read(const std::string& path) {
   std::string str;
   str.resize(static_cast<std::string::size_type>(file_size));
   auto bytes_left = file_size;
-  while ((bytes_left != 0u) && !std::feof(f)) {
+  while ((bytes_left != 0U) && (std::feof(f) == 0)) {
     auto* ptr = &str[file_size - bytes_left];
     const auto bytes_read = std::fread(ptr, 1, bytes_left, f);
     bytes_left -= bytes_read;
@@ -613,7 +688,7 @@ std::string read(const std::string& path) {
   // Close the file.
   std::fclose(f);
 
-  if (bytes_left != 0u) {
+  if (bytes_left != 0U) {
     throw std::runtime_error("Unable to read the file.");
   }
 
@@ -639,7 +714,7 @@ void write(const std::string& data, const std::string& path) {
   // Write the data to the file.
   const auto file_size = data.size();
   auto bytes_left = file_size;
-  while ((bytes_left != 0u) && !std::ferror(f)) {
+  while ((bytes_left != 0U) && (std::ferror(f) == 0)) {
     const auto* ptr = &data[file_size - bytes_left];
     const auto bytes_written = std::fwrite(ptr, 1, bytes_left, f);
     bytes_left -= bytes_written;
@@ -648,7 +723,7 @@ void write(const std::string& data, const std::string& path) {
   // Close the file.
   std::fclose(f);
 
-  if (bytes_left != 0u) {
+  if (bytes_left != 0U) {
     throw std::runtime_error("Unable to write the file.");
   }
 }
@@ -660,13 +735,13 @@ void append(const std::string& data, const std::string& path) {
 
 #ifdef _WIN32
   // Open the file.
-  auto handle = CreateFileW(utf8_to_ucs2(path).c_str(),
-                            FILE_APPEND_DATA,
-                            FILE_SHARE_READ | FILE_SHARE_WRITE,
-                            nullptr,
-                            OPEN_ALWAYS,
-                            FILE_ATTRIBUTE_NORMAL,
-                            nullptr);
+  auto* handle = CreateFileW(utf8_to_ucs2(path).c_str(),
+                             FILE_APPEND_DATA,
+                             FILE_SHARE_READ | FILE_SHARE_WRITE,
+                             nullptr,
+                             OPEN_ALWAYS,
+                             FILE_ATTRIBUTE_NORMAL,
+                             nullptr);
   if (handle == INVALID_HANDLE_VALUE) {
     throw std::runtime_error("Unable to open the file.");
   }
@@ -679,10 +754,11 @@ void append(const std::string& data, const std::string& path) {
   }
 
   // Write the data.
+  const DWORD bytes_to_write = static_cast<DWORD>(data.size());
   DWORD bytes_written;
   const auto success =
-      (WriteFile(handle, data.c_str(), data.size(), &bytes_written, nullptr) != FALSE);
-  if (!success || bytes_written != static_cast<DWORD>(data.size())) {
+      (WriteFile(handle, data.c_str(), bytes_to_write, &bytes_written, nullptr) != FALSE);
+  if (!success || bytes_written != bytes_to_write) {
     CloseHandle(handle);
     throw std::runtime_error("Unable to write to the file.");
   }
@@ -691,7 +767,7 @@ void append(const std::string& data, const std::string& path) {
   CloseHandle(handle);
 #else
   // Open the file (write pointer is at the end of the file).
-  auto f = std::fopen(path.c_str(), "ab");
+  auto* f = std::fopen(path.c_str(), "ab");
   if (f == nullptr) {
     throw std::runtime_error("Unable to open the file.");
   }
@@ -699,7 +775,7 @@ void append(const std::string& data, const std::string& path) {
   // Write the data to the file.
   const auto file_size = data.size();
   auto bytes_left = file_size;
-  while ((bytes_left != 0u) && !std::ferror(f)) {
+  while ((bytes_left != 0U) && (std::ferror(f) == 0)) {
     const auto* ptr = &data[file_size - bytes_left];
     const auto bytes_written = std::fwrite(ptr, 1, bytes_left, f);
     bytes_left -= bytes_written;
@@ -708,7 +784,7 @@ void append(const std::string& data, const std::string& path) {
   // Close the file.
   std::fclose(f);
 
-  if (bytes_left != 0u) {
+  if (bytes_left != 0U) {
     throw std::runtime_error("Unable to write the file.");
   }
 #endif
@@ -718,18 +794,20 @@ file_info_t get_file_info(const std::string& path) {
   // TODO(m): This is pretty much copy-paste from walk_directory(). Refactor.
 #ifdef _WIN32
   WIN32_FIND_DATAW find_data;
-  auto find_handle = FindFirstFileW(utf8_to_ucs2(path).c_str(), &find_data);
+  auto* find_handle = FindFirstFileW(utf8_to_ucs2(path).c_str(), &find_data);
   if (find_handle != INVALID_HANDLE_VALUE) {
     const auto name = ucs2_to_utf8(std::wstring(&find_data.cFileName[0]));
     const auto file_path = append_path(path, name);
-    file_info_t::time_t modify_time = 0;
-    file_info_t::time_t access_time = 0;
+    time::seconds_t modify_time = 0;
+    time::seconds_t access_time = 0;
     int64_t size = 0;
     bool is_dir = ((find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0);
     if (!is_dir) {
       size = two_dwords_to_int64(find_data.nFileSizeLow, find_data.nFileSizeHigh);
-      modify_time = win32_filetime_as_unix_epoch(find_data.ftLastWriteTime);
-      access_time = win32_filetime_as_unix_epoch(find_data.ftLastAccessTime);
+      modify_time = time::win32_filetime_to_unix_epoch(find_data.ftLastWriteTime.dwLowDateTime,
+                                                       find_data.ftLastWriteTime.dwHighDateTime);
+      access_time = time::win32_filetime_to_unix_epoch(find_data.ftLastAccessTime.dwLowDateTime,
+                                                       find_data.ftLastAccessTime.dwHighDateTime);
     }
     return file_info_t(file_path, modify_time, access_time, size, is_dir);
   }
@@ -737,19 +815,19 @@ file_info_t get_file_info(const std::string& path) {
   struct stat file_stat;
   const bool stat_ok = (stat(path.c_str(), &file_stat) == 0);
   if (stat_ok) {
-    file_info_t::time_t modify_time = 0;
-    file_info_t::time_t access_time = 0;
+    time::seconds_t modify_time = 0;
+    time::seconds_t access_time = 0;
     int64_t size = 0;
     const bool is_dir = S_ISDIR(file_stat.st_mode);
     const bool is_file = S_ISREG(file_stat.st_mode);
     if (is_file) {
       size = static_cast<int64_t>(file_stat.st_size);
 #ifdef __APPLE__
-      modify_time = static_cast<file_info_t::time_t>(file_stat.st_mtimespec.tv_sec);
-      access_time = static_cast<file_info_t::time_t>(file_stat.st_atimespec.tv_sec);
+      modify_time = static_cast<time::seconds_t>(file_stat.st_mtimespec.tv_sec);
+      access_time = static_cast<time::seconds_t>(file_stat.st_atimespec.tv_sec);
 #else
-      modify_time = static_cast<file_info_t::time_t>(file_stat.st_mtim.tv_sec);
-      access_time = static_cast<file_info_t::time_t>(file_stat.st_atim.tv_sec);
+      modify_time = static_cast<time::seconds_t>(file_stat.st_mtim.tv_sec);
+      access_time = static_cast<time::seconds_t>(file_stat.st_atim.tv_sec);
 #endif
     }
     return file_info_t(path, modify_time, access_time, size, is_dir);
@@ -784,7 +862,7 @@ std::vector<file_info_t> walk_directory(const std::string& path) {
 #ifdef _WIN32
   const auto search_str = utf8_to_ucs2(append_path(path, "*"));
   WIN32_FIND_DATAW find_data;
-  auto find_handle = FindFirstFileW(search_str.c_str(), &find_data);
+  auto* find_handle = FindFirstFileW(search_str.c_str(), &find_data);
   if (find_handle == INVALID_HANDLE_VALUE) {
     throw std::runtime_error("Unable to walk the directory.");
   }
@@ -792,8 +870,8 @@ std::vector<file_info_t> walk_directory(const std::string& path) {
     const auto name = ucs2_to_utf8(std::wstring(&find_data.cFileName[0]));
     if ((name != ".") && (name != "..")) {
       const auto file_path = append_path(path, name);
-      file_info_t::time_t modify_time = 0;
-      file_info_t::time_t access_time = 0;
+      time::seconds_t modify_time = 0;
+      time::seconds_t access_time = 0;
       int64_t size = 0;
       bool is_dir = false;
       if ((find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
@@ -807,8 +885,10 @@ std::vector<file_info_t> walk_directory(const std::string& path) {
         is_dir = true;
       } else {
         size = two_dwords_to_int64(find_data.nFileSizeLow, find_data.nFileSizeHigh);
-        modify_time = win32_filetime_as_unix_epoch(find_data.ftLastWriteTime);
-        access_time = win32_filetime_as_unix_epoch(find_data.ftLastAccessTime);
+        modify_time = time::win32_filetime_to_unix_epoch(find_data.ftLastWriteTime.dwLowDateTime,
+                                                         find_data.ftLastWriteTime.dwHighDateTime);
+        access_time = time::win32_filetime_to_unix_epoch(find_data.ftLastAccessTime.dwLowDateTime,
+                                                         find_data.ftLastAccessTime.dwHighDateTime);
       }
       files.emplace_back(file_info_t(file_path, modify_time, access_time, size, is_dir));
     }
@@ -834,8 +914,8 @@ std::vector<file_info_t> walk_directory(const std::string& path) {
       const auto file_path = append_path(path, name);
       struct stat file_stat;
       if (stat(file_path.c_str(), &file_stat) == 0) {
-        file_info_t::time_t modify_time = 0;
-        file_info_t::time_t access_time = 0;
+        time::seconds_t modify_time = 0;
+        time::seconds_t access_time = 0;
         int64_t size = 0;
         bool is_dir = false;
         if (S_ISDIR(file_stat.st_mode)) {
@@ -850,11 +930,11 @@ std::vector<file_info_t> walk_directory(const std::string& path) {
         } else if (S_ISREG(file_stat.st_mode)) {
           size = static_cast<int64_t>(file_stat.st_size);
 #ifdef __APPLE__
-          modify_time = static_cast<file_info_t::time_t>(file_stat.st_mtimespec.tv_sec);
-          access_time = static_cast<file_info_t::time_t>(file_stat.st_atimespec.tv_sec);
+          modify_time = static_cast<time::seconds_t>(file_stat.st_mtimespec.tv_sec);
+          access_time = static_cast<time::seconds_t>(file_stat.st_atimespec.tv_sec);
 #else
-          modify_time = static_cast<file_info_t::time_t>(file_stat.st_mtim.tv_sec);
-          access_time = static_cast<file_info_t::time_t>(file_stat.st_atim.tv_sec);
+          modify_time = static_cast<time::seconds_t>(file_stat.st_mtim.tv_sec);
+          access_time = static_cast<time::seconds_t>(file_stat.st_atim.tv_sec);
 #endif
         }
         files.emplace_back(file_info_t(file_path, modify_time, access_time, size, is_dir));

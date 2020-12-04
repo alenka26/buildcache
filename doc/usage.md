@@ -43,6 +43,26 @@ BuildCache[52286] (DEBUG) Invoked as symlink: gcc
 …
 ```
 
+## Impersonating a wrapped tool
+
+Setting `BUILDACHE_IMPERSONATE` forces BuildCache to operate as a tool wrapper,
+using the value of the property as the tool to wrap. This allows pointing build
+systems directly at the BuildCache executable instead of using symbolic links.
+Note that when this setting has a non-default value BuildCache command line
+arguments cannot be used - since any arguments are always forwarded to the
+wrapped tool.
+
+For example:
+
+```bash
+# Wraps execution of "g++ -c -O2 hello.cpp -o hello.o"
+$ BUILDCACHE_IMPERSONATE=g++ buildcache -c -O2 hello.cpp -o hello.o
+
+# Wraps execution of "g++ -s", probably not desired!
+$ export BUILDACHE_IMPERSONATE=g++
+$ buildcache -s
+```
+
 ## Using with icecream
 
 [icecream](https://github.com/icecc/icecream) (or ICECC) is a tool for
@@ -73,6 +93,16 @@ Example:
 $ BUILDCACHE_REMOTE=redis://my-redis-server:6379 buildcache g++ -c -O2 hello.cpp -o hello.o
 ```
 
+### HTTP
+
+The HTTP storage backend works with any HTTP server which allows `GET` and `PUT`
+requests on the configured path.
+
+Example:
+```bash
+$ BUILDCACHE_REMOTE=http://my-http-server:9000/my-buildcache-path buildcache g++ -c -O2 hello.cpp -o hello.o
+```
+
 ### S3
 
 [S3](https://en.wikipedia.org/wiki/Amazon_S3) is an open HTTP based protocol
@@ -94,3 +124,21 @@ Example:
 $ BUILDCACHE_REMOTE=s3://my-minio-server:9000/my-buildcache-bucket BUILDCACHE_S3_ACCESS="ABCDEFGHIJKL01234567" BUILDCACHE_S3_SECRET="sOMloNgSecretKeyThatsh0uldnotBeshownatAll" buildcache g++ -c -O2 hello.cpp -o hello.o
 ```
 
+## Using with Visual Studio / MSBuild
+
+For usage with command line MSBuild or in Visual Studio, BuildCache must be configured to be compatible with MSBuild's FileTracker.
+
+* Set `BUILDCACHE_DIR` environment variable to `C:\ProgramData\buildcache`.
+  * or [one of the folders ignored by file tracking](https://github.com/microsoft/msbuild/blob/9eb5d09e6cd262375e37a15a779d56ab274167c8/src/Utilities/TrackedDependencies/FileTracker.cs#L208).
+* Create a symlink named `cl.exe` pointing to your `buildcache.exe`.
+  * Alternatively, set `BUILDCACHE_IMPERSONATE` to `cl.exe`.
+
+Additionally, several default project settings have to be changed:
+
+* Change object file names from `$(IntDir)` to `$(IntDir)%(Filename).obj` to get one compiler invocation per source file.
+  * Can be set by opening a project's properties, then *Configuration Properties*, *C/C++*, *Output Files* page, *Object File Name* setting,
+  * Alternatively define the `<ObjectFileName>` property inside the `<ClCompile>` ItemDefinitionGroup in your `vcxproj` file.
+* Since the previous step turns off compiler level parallelism, restore performance using [`MultiToolTask`](https://devblogs.microsoft.com/cppblog/improved-parallelism-in-msbuild/).
+  * Can be turned on using the `<UseMultiToolTask>` property inside the `"Globals"` PropertyGroup in your `vcxproj`.
+* Set `<CLToolExe>` property to the symlink created previously.
+  * Also placed inside the `"Globals"` PropertyGroup in your `vcxproj`.

@@ -20,6 +20,7 @@
 #include <cache/remote_cache.hpp>
 
 #include <base/debug_utils.hpp>
+#include <cache/http_cache_provider.hpp>
 #include <cache/redis_cache_provider.hpp>
 #include <config/configuration.hpp>
 
@@ -52,9 +53,7 @@ bool get_host_description(std::string& protocol, std::string& host_description) 
 }  // namespace
 
 remote_cache_t::~remote_cache_t() {
-  if (m_provider != nullptr) {
-    delete m_provider;
-  }
+  delete m_provider;
 }
 
 bool remote_cache_t::connect() {
@@ -71,7 +70,9 @@ bool remote_cache_t::connect() {
 
   // Select an apropriate cache provider.
   m_provider = nullptr;
-  if (protocol == "redis") {
+  if (protocol == "http") {
+    m_provider = new http_cache_provider_t();
+  } else if (protocol == "redis") {
     m_provider = new redis_cache_provider_t();
 #ifdef ENABLE_S3
   } else if (protocol == "s3") {
@@ -84,11 +85,7 @@ bool remote_cache_t::connect() {
   }
 
   // Connect to the remote cache instance.
-  if (!m_provider->connect(host_description)) {
-    return false;
-  }
-
-  return true;
+  return m_provider->connect(host_description);
 }
 
 bool remote_cache_t::is_connected() const {

@@ -40,7 +40,9 @@
 #include <cjson/cJSON.h>
 #include <hiredis/hiredis.h>
 #include <lua.h>
+
 #include <lz4.h>
+#include <xxHash/xxhash.h>
 #include <zstd.h>
 
 #include <iostream>
@@ -73,7 +75,7 @@ std::unique_ptr<bcache::program_wrapper_t> find_suitable_wrapper(
       // Find all .lua files in the given directory.
       const auto lua_files = bcache::file::walk_directory(lua_root_dir);
       for (const auto& file_info : lua_files) {
-        const auto script_path = file_info.path();
+        const auto& script_path = file_info.path();
         if ((!file_info.is_dir()) && is_lua_script(script_path)) {
           // Check if the given wrapper can handle this command (first match wins).
           wrapper.reset(new bcache::lua_wrapper_t(args, script_path));
@@ -81,9 +83,8 @@ std::unique_ptr<bcache::program_wrapper_t> find_suitable_wrapper(
             bcache::debug::log(bcache::debug::DEBUG)
                 << "Found matching Lua wrapper for " << true_exe_path << ": " << script_path;
             break;
-          } else {
-            wrapper = nullptr;
           }
+          wrapper = nullptr;
         }
       }
     }
@@ -144,58 +145,73 @@ std::unique_ptr<bcache::program_wrapper_t> find_suitable_wrapper(
     // Print the cache stats.
     std::cout << "Cache status:\n";
     cache.show_stats();
+  } catch (const std::exception& e) {
+    std::cerr << "*** Unexpected error: " << e.what() << "\n";
+    return_code = 1;
+  } catch (...) {
+    std::cerr << "*** Unexpected error.\n";
+    return_code = 1;
+  }
+  std::exit(return_code);
+}
 
-    {
-// Print the configuration.
+[[noreturn]] void show_config_and_exit() {
+  int return_code = 0;
+  try {
 #ifdef _WIN32
-      const std::string PATH_SEP = ";";
+    const std::string PATH_DELIMITER = ";";
 #else
-      const std::string PATH_SEP = ":";
+    const std::string PATH_DELIMITER = ":";
 #endif
 
-      std::cout << "\nConfiguration:\n";
-      std::cout << "  Configuration file: " << bcache::config::config_file() << "\n\n";
+    std::cout << "Configuration file: " << bcache::config::config_file() << "\n\n";
 
-      std::cout << "  BUILDCACHE_DIR:                    " << bcache::config::dir() << "\n";
-      std::cout << "  BUILDCACHE_LUA_PATH:               "
-                << bcache::config::lua_paths().join(PATH_SEP, false) << "\n";
-      std::cout << "  BUILDCACHE_PREFIX:                 " << bcache::config::prefix() << "\n";
-      std::cout << "  BUILDCACHE_REMOTE:                 "
-                << (bcache::config::remote().empty() ? "(disabled)" : bcache::config::remote())
-                << "\n";
-      std::cout << "  BUILDCACHE_S3_ACCESS:              "
-                << (bcache::config::s3_access().empty() ? "" : "*******") << "\n";
-      std::cout << "  BUILDCACHE_S3_SECRET:              "
-                << (bcache::config::s3_secret().empty() ? "" : "*******") << "\n";
-      std::cout << "  BUILDCACHE_MAX_CACHE_SIZE:         " << bcache::config::max_cache_size()
-                << " (" << bcache::file::human_readable_size(bcache::config::max_cache_size())
-                << ")\n";
-      std::cout << "  BUILDCACHE_MAX_LOCAL_ENTRY_SIZE:   " << bcache::config::max_local_entry_size()
-                << " (" << bcache::file::human_readable_size(bcache::config::max_local_entry_size())
-                << ")\n";
-      std::cout << "  BUILDCACHE_MAX_REMOTE_ENTRY_SIZE:  "
-                << bcache::config::max_remote_entry_size() << " ("
-                << bcache::file::human_readable_size(bcache::config::max_remote_entry_size())
-                << ")\n";
-      std::cout << "  BUILDCACHE_DEBUG:                  " << bcache::config::debug() << "\n";
-      std::cout << "  BUILDCACHE_LOG_FILE:               " << bcache::config::log_file() << "\n";
-      std::cout << "  BUILDCACHE_HARD_LINKS:             "
-                << (bcache::config::hard_links() ? "true" : "false") << "\n";
-      std::cout << "  BUILDCACHE_CACHE_LINK_COMMANDS:    "
-                << (bcache::config::cache_link_commands() ? "true" : "false") << "\n";
-      std::cout << "  BUILDCACHE_COMPRESS:               "
-                << (bcache::config::compress() ? "true" : "false") << "\n";
-      std::cout << "  BUILDCACHE_COMPRESS_FORMAT:        "
-                << to_string(bcache::config::compress_format()) << "\n";
-      std::cout << "  BUILDCACHE_COMPRESS_LEVEL:         " << bcache::config::compress_level()
-                << "\n";
-      std::cout << "  BUILDCACHE_PERF:                   "
-                << (bcache::config::perf() ? "true" : "false") << "\n";
-      std::cout << "  BUILDCACHE_DISABLE:                "
-                << (bcache::config::disable() ? "true" : "false") << "\n";
-      std::cout << "  BUILDCACHE_ACCURACY:               "
-                << to_string(bcache::config::accuracy()) << "\n";
-    }
+    std::cout << "  BUILDCACHE_ACCURACY:               " << to_string(bcache::config::accuracy())
+              << "\n";
+    std::cout << "  BUILDCACHE_CACHE_LINK_COMMANDS:    "
+              << (bcache::config::cache_link_commands() ? "true" : "false") << "\n";
+    std::cout << "  BUILDCACHE_COMPRESS:               "
+              << (bcache::config::compress() ? "true" : "false") << "\n";
+    std::cout << "  BUILDCACHE_COMPRESS_FORMAT:        "
+              << to_string(bcache::config::compress_format()) << "\n";
+    std::cout << "  BUILDCACHE_COMPRESS_LEVEL:         " << bcache::config::compress_level()
+              << "\n";
+    std::cout << "  BUILDCACHE_DEBUG:                  " << bcache::config::debug() << "\n";
+    std::cout << "  BUILDCACHE_DIR:                    " << bcache::config::dir() << "\n";
+    std::cout << "  BUILDCACHE_DISABLE:                "
+              << (bcache::config::disable() ? "true" : "false") << "\n";
+    std::cout << "  BUILDCACHE_HARD_LINKS:             "
+              << (bcache::config::hard_links() ? "true" : "false") << "\n";
+    std::cout << "  BUILDCACHE_HASH_EXTRA_FILES:       "
+              << bcache::config::hash_extra_files().join(PATH_DELIMITER, false) << "\n";
+    std::cout << "  BUILDCACHE_IMPERSONATE:            " << bcache::config::impersonate() << "\n";
+    std::cout << "  BUILDCACHE_LOG_FILE:               " << bcache::config::log_file() << "\n";
+    std::cout << "  BUILDCACHE_LUA_PATH:               "
+              << bcache::config::lua_paths().join(PATH_DELIMITER, false) << "\n";
+    std::cout << "  BUILDCACHE_MAX_CACHE_SIZE:         " << bcache::config::max_cache_size() << " ("
+              << bcache::file::human_readable_size(bcache::config::max_cache_size()) << ")\n";
+    std::cout << "  BUILDCACHE_MAX_LOCAL_ENTRY_SIZE:   " << bcache::config::max_local_entry_size()
+              << " (" << bcache::file::human_readable_size(bcache::config::max_local_entry_size())
+              << ")\n";
+    std::cout << "  BUILDCACHE_MAX_REMOTE_ENTRY_SIZE:  " << bcache::config::max_remote_entry_size()
+              << " (" << bcache::file::human_readable_size(bcache::config::max_remote_entry_size())
+              << ")\n";
+    std::cout << "  BUILDCACHE_PERF:                   "
+              << (bcache::config::perf() ? "true" : "false") << "\n";
+    std::cout << "  BUILDCACHE_PREFIX:                 " << bcache::config::prefix() << "\n";
+    std::cout << "  BUILDCACHE_READ_ONLY:              "
+              << (bcache::config::read_only() ? "true" : "false") << "\n";
+    std::cout << "  BUILDCACHE_READ_ONLY_REMOTE:       "
+              << (bcache::config::read_only_remote() ? "true" : "false") << "\n";
+    std::cout << "  BUILDCACHE_REMOTE:                 " << bcache::config::remote() << "\n";
+    std::cout << "  BUILDCACHE_REMOTE_LOCKS:           "
+              << (bcache::config::remote_locks() ? "true" : "false") << "\n";
+    std::cout << "  BUILDCACHE_S3_ACCESS:              "
+              << (bcache::config::s3_access().empty() ? "" : "*******") << "\n";
+    std::cout << "  BUILDCACHE_S3_SECRET:              "
+              << (bcache::config::s3_secret().empty() ? "" : "*******") << "\n";
+    std::cout << "  BUILDCACHE_TERMINATE_ON_MISS:      "
+              << (bcache::config::terminate_on_miss() ? "true" : "false") << "\n";
   } catch (const std::exception& e) {
     std::cerr << "*** Unexpected error: " << e.what() << "\n";
     return_code = 1;
@@ -230,6 +246,7 @@ std::unique_ptr<bcache::program_wrapper_t> find_suitable_wrapper(
   std::cout << "\nSupported back ends:\n";
   std::cout << "  local - Local file system based cache (level 1)\n";
   std::cout << "  Redis - Remote in-memory cache (level 2)\n";
+  std::cout << "  HTTP  - Remote webdav cache (level 2)\n";
 #ifdef ENABLE_S3
   std::cout << "  S3    - Remote object storage based cache (level 2)\n";
 #endif
@@ -237,7 +254,7 @@ std::unique_ptr<bcache::program_wrapper_t> find_suitable_wrapper(
   // Print a list of third party components.
   std::cout << "\nThird party components:\n";
 #ifdef ENABLE_S3
-  std::cout << "  cpp-base64 1.01.00\n";
+  std::cout << "  cpp-base64 2.rc.04\n";
 #endif
   std::cout << "  cJSON " << CJSON_VERSION_MAJOR << "." << CJSON_VERSION_MINOR << "."
             << CJSON_VERSION_PATCH << "\n";
@@ -250,7 +267,8 @@ std::unique_ptr<bcache::program_wrapper_t> find_suitable_wrapper(
             << LUA_VERSION_RELEASE << "\n";
   std::cout << "  lz4 " << LZ4_VERSION_STRING << "\n";
   std::cout << "  zstd " << ZSTD_VERSION_STRING << "\n";
-  std::cout << "  md4\n";
+  std::cout << "  xxhash " << XXH_VERSION_MAJOR << "." << XXH_VERSION_MINOR << "."
+            << XXH_VERSION_RELEASE << "\n";
 #ifdef USE_MINGW_THREADS
   std::cout << "  mingw-std-threads\n";
 #endif
@@ -265,7 +283,7 @@ std::unique_ptr<bcache::program_wrapper_t> find_suitable_wrapper(
     bcache::local_cache_t cache;
 
     // Get the name of the config file, and create an empty file if it does not already exist.
-    const auto config_file = bcache::config::config_file();
+    const auto& config_file = bcache::config::config_file();
     if (!bcache::file::file_exists(config_file)) {
       bcache::file::write("{\n}\n", config_file);
     }
@@ -279,7 +297,7 @@ std::unique_ptr<bcache::program_wrapper_t> find_suitable_wrapper(
     std::cerr << "*** Unexpected error.\n";
     return_code = 1;
   }
-  std::exit(0);
+  std::exit(return_code);
 }
 
 [[noreturn]] void wrap_compiler_and_exit(int argc, const char** argv) {
@@ -377,7 +395,8 @@ void print_help(const char* program_name) {
   std::cout << "\n";
   std::cout << "Options:\n";
   std::cout << "    -C, --clear           clear the local cache (except configuration)\n";
-  std::cout << "    -s, --show-stats      show statistics summary and configuration\n";
+  std::cout << "    -s, --show-stats      show statistics summary\n";
+  std::cout << "    -c, --show-config     show current configuration\n";
   std::cout << "    -z, --zero-stats      zero statistics counters\n";
   std::cout << "    -e, --edit-config     edit the configuration file\n";
   std::cout << "\n";
@@ -402,7 +421,15 @@ int main(int argc, const char** argv) {
     bcache::debug::log(bcache::debug::FATAL) << "An exception occurred.";
   }
 
-  // Handle symlink invokation.
+  // Handle BUILDCACHE_IMPERSONATE invocation.
+  const auto& impersonate = bcache::config::impersonate();
+  if (!impersonate.empty()) {
+    bcache::debug::log(bcache::debug::DEBUG) << "Impersonating: " << impersonate;
+    argv[0] = impersonate.c_str();
+    wrap_compiler_and_exit(argc, &argv[0]);
+  }
+
+  // Handle symlink invocation.
   if (bcache::lower_case(bcache::file::get_file_part(std::string(argv[0]), false)) !=
       BUILDCACHE_EXE_NAME) {
     bcache::debug::log(bcache::debug::DEBUG) << "Invoked as symlink: " << argv[0];
@@ -420,6 +447,8 @@ int main(int argc, const char** argv) {
     clear_cache_and_exit();
   } else if (compare_arg(arg_str, "-s", "--show-stats")) {
     show_stats_and_exit();
+  } else if (compare_arg(arg_str, "-c", "--show-config")) {
+    show_config_and_exit();
   } else if (compare_arg(arg_str, "-z", "--zero-stats")) {
     zero_stats_and_exit();
   } else if (compare_arg(arg_str, "-V", "--version")) {

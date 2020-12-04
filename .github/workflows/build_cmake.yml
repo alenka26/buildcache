@@ -16,31 +16,49 @@ jobs:
       matrix:
         config:
         - {
-            name: "Windows Latest MSVC", artifact: "buildcache-win-msvc.zip",
+            name: "Windows Latest MSVC",
+            artifact: "buildcache-win-msvc.zip",
+            artifact_format: "zip",
             os: windows-latest,
-            cc: "cl", cxx: "cl",
+            cc: "cl",
+            cxx: "cl",
             environment_script: "C:/Program Files (x86)/Microsoft Visual Studio/2019/Enterprise/VC/Auxiliary/Build/vcvars64.bat"
           }
         - {
-            name: "Windows Latest MinGW", artifact: "buildcache-win-mingw.zip",
+            name: "Windows Latest MinGW",
+            artifact: "buildcache-win-mingw.zip",
+            artifact_format: "zip",
             os: windows-latest,
-            cc: "gcc", cxx: "g++"
+            cc: "gcc",
+            cxx: "g++"
           }
         - {
-            name: "Ubuntu Latest GCC", artifact: "buildcache-linux.zip",
-            os: ubuntu-latest,
-            cc: "gcc", cxx: "g++"
+            name: "Ubuntu 20.04 GCC",
+            artifact: "buildcache-linux.tar.gz",
+            artifact_format: "gnutar",
+            artifact_tar_flags: "z",
+            os: ubuntu-20.04,
+            cc: "gcc",
+            cxx: "g++"
           }
         - {
-            name: "macOS Latest Clang", artifact: "buildcache-macos.zip",
+            name: "macOS Latest Clang",
+            artifact: "buildcache-macos.zip",
+            artifact_format: "zip",
             os: macos-latest,
-            cc: "clang", cxx: "clang++"
+            cc: "clang",
+            cxx: "clang++"
           }
 
     steps:
     - uses: actions/checkout@v1
 
-    - name: Download Ninja and CMake
+    - name: Setup Python
+      uses: actions/setup-python@v1
+      with:
+        python-version: 3.8.6
+
+    - name: Install dependencies
       id: cmake_and_ninja
       shell: cmake -P {0}
       run: |
@@ -79,6 +97,13 @@ jobs:
           execute_process(
             COMMAND chmod +x ninja
             COMMAND chmod +x ${cmake_dir}/cmake
+          )
+        endif()
+
+        if ("${{ runner.os }}" STREQUAL "Linux")
+          execute_process(
+            COMMAND sudo apt update
+            COMMAND sudo apt install -y clang-tidy clang-format
           )
         endif()
 
@@ -140,7 +165,7 @@ jobs:
         endif()
 
 
-    - name: Run tests
+    - name: Run unit tests
       shell: cmake -P {0}
       run: |
         include(ProcessorCount)
@@ -158,13 +183,26 @@ jobs:
         endif()
 
 
+    - name: Run static checks
+      shell: cmake -P {0}
+      run: |
+        if ("${{ runner.os }}" STREQUAL "Linux")
+          execute_process(
+            COMMAND test_scripts/run_linters.py -p build
+            RESULT_VARIABLE result
+          )
+          if (NOT result EQUAL 0)
+            message(FATAL_ERROR "Bad exit status")
+          endif()
+        endif()
+
+
     - name: Install Strip
-      run: ${{ steps.cmake_and_ninja.outputs.cmake_dir }}/cmake --install build --prefix instdir --strip
+      run: ${{ steps.cmake_and_ninja.outputs.cmake_dir }}/cmake --install build --prefix buildcache --strip
 
 
     - name: Pack
-      working-directory: instdir
-      run: ${{ steps.cmake_and_ninja.outputs.cmake_dir }}/cmake -E tar cfv ../${{ matrix.config.artifact }} --format=zip .
+      run: ${{ steps.cmake_and_ninja.outputs.cmake_dir }}/cmake -E tar cv${{ matrix.config.artifact_tar_flags }}f ${{ matrix.config.artifact }} --format=${{ matrix.config.artifact_format }} buildcache
 
 
     - name: Upload
@@ -208,19 +246,27 @@ jobs:
       matrix:
         config:
         - {
-            name: "Windows Latest MSVC", artifact: "buildcache-win-msvc.zip",
+            name: "Windows Latest MSVC",
+            artifact: "buildcache-win-msvc.zip",
+            artifact_content_type: "application/zip",
             os: ubuntu-latest
           }
         - {
-            name: "Windows Latest MinGW", artifact: "buildcache-win-mingw.zip",
+            name: "Windows Latest MinGW",
+            artifact: "buildcache-win-mingw.zip",
+            artifact_content_type: "application/zip",
             os: ubuntu-latest
           }
         - {
-            name: "Ubuntu Latest GCC", artifact: "buildcache-linux.zip",
+            name: "Ubuntu Latest GCC",
+            artifact: "buildcache-linux.tar.gz",
+            artifact_content_type: "application/gzip",
             os: ubuntu-latest
           }
         - {
-            name: "macOS Latest Clang", artifact: "buildcache-macos.zip",
+            name: "macOS Latest Clang",
+            artifact: "buildcache-macos.zip",
+            artifact_content_type: "application/zip",
             os: ubuntu-latest
           }
     needs: release
@@ -251,4 +297,4 @@ jobs:
         upload_url: ${{ steps.set_upload_url.outputs.upload_url }}
         asset_path: ./${{ matrix.config.artifact }}
         asset_name: ${{ matrix.config.artifact }}
-        asset_content_type: application/zip
+        asset_content_type: ${{ matrix.config.artifact_content_type }}

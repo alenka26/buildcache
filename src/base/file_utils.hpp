@@ -24,6 +24,8 @@
 #include <string>
 #include <vector>
 
+#include <base/time_utils.hpp>
+
 namespace bcache {
 namespace file {
 /// @brief A helper class for handling temporary files and directories.
@@ -51,12 +53,9 @@ private:
 /// @brief Information about a file.
 class file_info_t {
 public:
-  /// @brief File time (seconds since the Unix epoch, i.e. 00:00:00 UTC on 1 January 1970).
-  using time_t = int64_t;
-
   file_info_t(const std::string& path,
-              const time_t modify_time,
-              const time_t access_time,
+              const time::seconds_t modify_time,
+              const time::seconds_t access_time,
               const int64_t size,
               const bool is_dir);
 
@@ -67,13 +66,13 @@ public:
 
   /// @returns the last modification time of the file, or the most recent modification time for any
   /// of the recursively contained files if this is a directory.
-  time_t modify_time() const {
+  time::seconds_t modify_time() const {
     return m_modify_time;
   }
 
   /// @returns the last access time of the file, or the most recent access time for any of the
   /// recursively contained files if this is a directory.
-  time_t access_time() const {
+  time::seconds_t access_time() const {
     return m_access_time;
   }
 
@@ -84,14 +83,14 @@ public:
   }
 
   /// @returns true if file is a directory.
-  int64_t is_dir() const {
+  bool is_dir() const {
     return m_is_dir;
   }
 
 private:
   std::string m_path;
-  time_t m_modify_time;
-  time_t m_access_time;
+  time::seconds_t m_modify_time;
+  time::seconds_t m_access_time;
   int64_t m_size;
   bool m_is_dir;
 };
@@ -225,6 +224,11 @@ void copy(const std::string& from_path, const std::string& to_path);
 /// @param to_path The destination file.
 /// @throws runtime_error if the operation could not be completed.
 void link_or_copy(const std::string& from_path, const std::string& to_path);
+
+/// @brief Touch the file to update the modification time.
+/// @param path The path to the file.
+/// @throws runtime_error if the operation could not be completed.
+void touch(const std::string& path);
 
 /// @brief Read a file into a string.
 /// @param path The path to the file.

@@ -25,6 +25,9 @@ set(CMAKE_CXX_STANDARD 11)
 set(CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# For tooling (e.g. clang-tidy).
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 # For tests.
 enable_testing()
 include(cmake/buildcache_add_test.cmake)
@@ -84,7 +87,7 @@ if(DOXYGEN_FOUND AND NOT (${CMAKE_VERSION} VERSION_LESS "3.9.0"))
   set(DOXYGEN_OUTPUT_DIRECTORY doc)
   set(DOXYGEN_GENERATE_HTML YES)
   set(DOXYGEN_GENERATE_LATEX NO)
-  set(DOXYGEN_EXCLUDE third_party)
+  set(DOXYGEN_EXCLUDE_PATTERNS "*/third_party/*")
   set(DOXYGEN_EXTRACT_PRIVATE YES)
   set(DOXYGEN_EXTRACT_STATIC YES)
   set(DOXYGEN_QUIET YES)
