@@ -1,6 +1,6 @@
 Name: buildcache
-Version: 0.18.0
-Release: alt2
+Version: 0.23.0
+Release: alt1
 
 Summary: a simple compiler accelerator
 License: Zlib
@@ -37,6 +37,9 @@ cd src
 %_bindir/buildcache
 
 %changelog
+* Fri Dec 04 2020 Ivan Savin <svn17@altlinux.org> 0.23.0-alt1
+- Merge remote-tracking branch 'upstream/master' into sisyphus.
+
 * Wed Nov 18 2020 Ivan Savin <svn17@altlinux.org> 0.18.0-alt2
 - Add system libraries (zstd, lz4, hiredis, lua) instead of bundled.
 
