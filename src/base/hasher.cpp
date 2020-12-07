@@ -27,7 +27,7 @@
 #include <cstring>
 
 #define XXH_INLINE_ALL
-#include <xxHash/xxhash.h>
+#include <xxhash.h>
 
 namespace bcache {
 namespace {

@@ -12,7 +12,7 @@ Packager: Ivan Savin <svn17@altlinux.org>
 
 Patch: %name-%version-alt.patch
 
-BuildRequires: cmake gcc-c++ libhiredis-devel liblz4-devel libzstd-devel lua5.3-devel
+BuildRequires: cmake gcc-c++ libhiredis-devel liblz4-devel libzstd-devel lua5.3-devel libxxhash-devel
 
 %description
 This is a simple compiler accelerator that caches and reuses build results to avoid

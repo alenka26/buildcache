@@ -42,7 +42,7 @@
 #include <lua.h>
 
 #include <lz4.h>
-#include <xxHash/xxhash.h>
+#include <xxhash.h>
 #include <zstd.h>
 
 #include <iostream>
