@@ -49,6 +49,7 @@
 #include <base/compressor.hpp>
 #include <base/debug_utils.hpp>
 #include <base/file_utils.hpp>
+#include <base/hasher.hpp>
 #include <base/serializer_utils.hpp>
 #include <config/configuration.hpp>
 #include <sys/perf_utils.hpp>
@@ -64,26 +65,64 @@
 namespace bcache {
 namespace {
 const std::string CACHE_FILES_FOLDER_NAME = "c";
+const std::string DIRECT_CACHE_MANIFEST_FILE_NAME = ".manifest";
 const std::string CACHE_ENTRY_FILE_NAME = ".entry";
 const std::string FILE_LOCK_SUFFIX = ".lock";
 const std::string STATS_FILE_NAME = "stats.json";
+
+// Maximum number of manifests per direct mode cache entry (must be at least 1). Set this too low,
+// and there will be cache thrashing (e.g. when switching branches). Set this too high and cache
+// lookup times will suffer (all existing entires are tried until a hit is found).
+const int NUM_MANIFESTS_PER_ENTRY = 4;
+
+std::string direct_mode_manifesty_file_path(const std::string& cache_entry_path, int manifest_no) {
+  std::ostringstream name;
+  name << manifest_no << DIRECT_CACHE_MANIFEST_FILE_NAME;
+  return file::append_path(cache_entry_path, name.str());
+}
 
 std::string cache_entry_file_lock_path(const std::string& cache_entry_path) {
   return cache_entry_path + FILE_LOCK_SUFFIX;
 }
 
-bool is_cache_entry_dir_path(const std::string& path) {
-  const auto entry_dir_name = file::get_file_part(path);
-  const auto hash_prefix_dir_name = file::get_file_part(file::get_dir_part(path));
-
-  // Is the hash prefix dir name 2 characters long and the endtry dir name 30 characters long?
-  if ((hash_prefix_dir_name.length() != 2) || (entry_dir_name.length() != 30)) {
+bool is_cache_prefix_dir_path(const std::string& path) {
+  // Is the parent dir the cache files dir?
+  if (file::get_file_part(file::get_dir_part(path)) != CACHE_FILES_FOLDER_NAME) {
     return false;
   }
 
-  // Is the hash prefix dir + entry dir name a valid hash (i.a. all characters are hex)?
-  const auto hash_str = hash_prefix_dir_name + entry_dir_name;
-  for (const auto c : hash_str) {
+  const auto hash_prefix_dir_name = file::get_file_part(path);
+
+  // Is the hash prefix dir name 2 characters long?
+  if (hash_prefix_dir_name.length() != 2) {
+    return false;
+  }
+
+  // Is the hash prefix dir name made up of all hex characters?
+  for (const auto c : hash_prefix_dir_name) {
+    if ((c < '0') || (c > 'f') || ((c > '9') && (c < 'a'))) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+bool is_cache_entry_dir_path(const std::string& path) {
+  // Is the parent dir a prefix dir?
+  if (!is_cache_prefix_dir_path(file::get_dir_part(path))) {
+    return false;
+  }
+
+  const auto entry_dir_name = file::get_file_part(path);
+
+  // Is the endtry dir name 30 characters long?
+  if (entry_dir_name.length() != 30) {
+    return false;
+  }
+
+  // Is the entry dir name made up of all hex characters?
+  for (const auto c : entry_dir_name) {
     if ((c < '0') || (c > 'f') || ((c > '9') && (c < 'a'))) {
       return false;
     }
@@ -115,6 +154,29 @@ std::vector<file::file_info_t> get_cache_entry_dirs(const std::string& root_fold
   return cache_dirs;
 }
 
+std::vector<file::file_info_t> get_cache_prefix_dirs(const std::string& root_folder) {
+  std::vector<file::file_info_t> prefix_dirs;
+
+  try {
+    const auto cache_files_dir = file::append_path(root_folder, CACHE_FILES_FOLDER_NAME);
+    if (file::dir_exists(cache_files_dir)) {
+      // Get all the files in the cache dir.
+      const auto files = file::walk_directory(cache_files_dir);
+
+      // Return only the directories that are valid cache entries.
+      for (const auto& file : files) {
+        if (file.is_dir() && is_cache_prefix_dir_path(file.path())) {
+          prefix_dirs.push_back(file);
+        }
+      }
+    }
+  } catch (const std::exception& e) {
+    debug::log(debug::ERROR) << e.what();
+  }
+
+  return prefix_dirs;
+}
+
 bool is_time_for_housekeeping() {
   // Get the time since the epoch, in microseconds.
   const auto t =
@@ -143,10 +205,9 @@ std::string local_cache_t::get_cache_files_folder() const {
   return cache_files_path;
 }
 
-std::string local_cache_t::hash_to_cache_entry_path(const hasher_t::hash_t& hash) const {
-  const std::string str = hash.as_string();
-  const auto parent_dir_path = file::append_path(get_cache_files_folder(), str.substr(0, 2));
-  return file::append_path(parent_dir_path, str.substr(2));
+std::string local_cache_t::hash_to_cache_entry_path(const std::string& hash) const {
+  const auto parent_dir_path = file::append_path(get_cache_files_folder(), hash.substr(0, 2));
+  return file::append_path(parent_dir_path, hash.substr(2));
 }
 
 void local_cache_t::clear() {
@@ -191,13 +252,13 @@ void local_cache_t::show_stats() {
     cache_stats_t stats;
     file::file_lock_t lock{stats_path + FILE_LOCK_SUFFIX, config::remote_locks()};
     if (!lock.has_lock()) {
-      debug::log(debug::DEBUG) << "failed to lock stats, skipping";
+      debug::log(debug::DEBUG) << "Failed to lock stats, skipping";
       return;
     }
     if (stats.from_file(stats_path)) {
       overall_stats += stats;
     } else {
-      debug::log(debug::DEBUG) << "failed to load stats for dir " << firstLevelDirPath;
+      debug::log(debug::DEBUG) << "Failed to load stats for dir " << firstLevelDirPath;
     }
   };
 
@@ -222,16 +283,12 @@ void local_cache_t::show_stats() {
 
 void local_cache_t::zero_stats() {
   // Get all first level dirs (each of which may contain a stats file).
-  auto dirs = get_cache_entry_dirs(config::dir());
-  std::set<std::string> first_level_dirs;
-  for (const auto& dir : dirs) {
-    first_level_dirs.insert(file::get_dir_part(dir.path()));
-  }
+  const auto dirs = get_cache_prefix_dirs(config::dir());
 
   // Remove all the stats files.
-  for (const auto& dir : first_level_dirs) {
+  for (const auto& dir : dirs) {
     try {
-      const auto stats_path = file::append_path(dir, STATS_FILE_NAME);
+      const auto stats_path = file::append_path(dir.path(), STATS_FILE_NAME);
       file::file_lock_t lock{stats_path + FILE_LOCK_SUFFIX, config::remote_locks()};
       if (lock.has_lock()) {
         file::remove_file(stats_path);
@@ -242,7 +299,80 @@ void local_cache_t::zero_stats() {
   }
 }
 
-void local_cache_t::add(const hasher_t::hash_t& hash,
+void local_cache_t::add_direct(const std::string& direct_hash,
+                               const direct_mode_manifest_t& manifest) {
+  // Note: This logic is executed without a file lock. It should never corrupt the cache, but in
+  // rare race condition situations a direct mode cache manifest may fail to be added - which is
+  // fine.
+
+  // Create the direct mode cache entry directory (if necessary).
+  const auto cache_entry_path = hash_to_cache_entry_path(direct_hash);
+  file::create_dir_with_parents(cache_entry_path);
+
+  // Find an empty slot, or replace the oldest entry.
+  int manifest_no;
+  time::seconds_t oldest = -1;
+  for (int candidate_no = 1; candidate_no <= NUM_MANIFESTS_PER_ENTRY; ++candidate_no) {
+    const auto file_name = direct_mode_manifesty_file_path(cache_entry_path, candidate_no);
+    try {
+      const auto info = file::get_file_info(file_name);
+      if (oldest < 0 || info.access_time() < oldest) {
+        oldest = info.access_time();
+        manifest_no = candidate_no;
+      }
+    } catch (...) {
+      // If we could not get the file info then the file did not exist, and we can use the slot.
+      manifest_no = candidate_no;
+      break;
+    }
+  }
+
+  // Store the manifest in the direct mode cache entry.
+  const auto file_name = direct_mode_manifesty_file_path(cache_entry_path, manifest_no);
+  file::write_atomic(manifest.serialize(), file_name);
+}
+
+direct_mode_manifest_t local_cache_t::lookup_direct(const std::string& direct_hash) {
+  // Get the path to the cache entry.
+  const auto cache_entry_path = hash_to_cache_entry_path(direct_hash);
+
+  // Try all possible manifest numbers until we find a hit (or not).
+  for (int manifest_no = 1; manifest_no <= NUM_MANIFESTS_PER_ENTRY; ++manifest_no) {
+    try {
+      // Read the cache manifest file (this will throw if the file does not exist).
+      const auto file_name = direct_mode_manifesty_file_path(cache_entry_path, manifest_no);
+      const auto manifest_data = file::read(file_name);
+      auto manifest = direct_mode_manifest_t::deserialize(manifest_data);
+
+      // Validate the hashes for all the implicit input files.
+      {
+        PERF_SCOPE(HASH_INCLUDE_FILES);
+        for (const auto& item : manifest.files_width_hashes()) {
+          const auto& path = item.first;
+          const auto& expected_file_hash = item.second;
+
+          // Check that the file has not changed.
+          hasher_t hasher;
+          hasher.update_from_file(path);
+          const auto file_hash = hasher.final().as_string();
+          if (file_hash != expected_file_hash) {
+            debug::log(debug::DEBUG) << "No direct match (" << file::get_file_part(file_name)
+                                     << "): " << path << " differs";
+            throw std::runtime_error("Implicit input files have changed");
+          }
+        }
+      }
+
+      return manifest;
+    } catch (...) {
+      // We don't care why, but this manifest_no was not a hit.
+    }
+  }
+
+  return direct_mode_manifest_t();
+}
+
+void local_cache_t::add(const std::string& hash,
                         const cache_entry_t& entry,
                         const std::map<std::string, expected_file_t>& expected_files,
                         const bool allow_hard_links) {
@@ -288,7 +418,7 @@ void local_cache_t::add(const hasher_t::hash_t& hash,
   }
 }
 
-std::pair<cache_entry_t, file::file_lock_t> local_cache_t::lookup(const hasher_t::hash_t& hash) {
+std::pair<cache_entry_t, file::file_lock_t> local_cache_t::lookup(const std::string& hash) {
   // Get the path to the cache entry.
   const auto cache_entry_path = hash_to_cache_entry_path(hash);
 
@@ -319,7 +449,7 @@ std::pair<cache_entry_t, file::file_lock_t> local_cache_t::lookup(const hasher_t
   }
 }
 
-bool local_cache_t::update_stats(const hasher_t::hash_t& hash,
+bool local_cache_t::update_stats(const std::string& hash,
                                  const cache_stats_t& delta) const noexcept {
   PERF_SCOPE(UPDATE_STATS);
   try {
@@ -350,7 +480,7 @@ bool local_cache_t::update_stats(const hasher_t::hash_t& hash,
   }
 }
 
-void local_cache_t::get_file(const hasher_t::hash_t& hash,
+void local_cache_t::get_file(const std::string& hash,
                              const std::string& source_id,
                              const std::string& target_path,
                              const bool is_compressed,

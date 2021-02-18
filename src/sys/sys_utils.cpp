@@ -84,8 +84,8 @@ std::string make_exe_path_suitable_for_icecc(const std::string& path) {
 #if !defined(_WIN32)
 bool try_start_editor(const std::string& program, const std::string& file) {
   try {
-    const auto& real_path = file::find_executable(program);
-    execl(real_path.c_str(), program.c_str(), file.c_str(), (char*)0);
+    const auto& exe_path = file::find_executable(program);
+    execl(exe_path.real_path().c_str(), program.c_str(), file.c_str(), (char*)0);
     return true;
   } catch (...) {
   }
@@ -366,7 +366,14 @@ run_result_t run(const string_list_t& args, const bool quiet) {
       execv(argv[0], &argv[0]);
 
       // If execv returns, it must have failed.
-      throw std::runtime_error("Unable to launch command via execv()");
+      switch (errno) {
+        case ENOENT:
+          throw std::runtime_error("execv(): No such file: " + args[0]);
+        case EACCES:
+          throw std::runtime_error("execv(): Permission denied: " + args[0]);
+        default:
+          throw std::runtime_error("execv(): Unable to launch command: " + args[0]);
+      }
     } catch (std::exception& e) {
       // TODO(m): Signal this error to the parent process somehow.
       std::cerr << "*** BuildCache error: " << e.what() << "\n";

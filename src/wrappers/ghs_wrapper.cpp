@@ -25,6 +25,8 @@
 
 #include <algorithm>
 #include <list>
+#include <regex>
+#include <set>
 #include <stdexcept>
 
 namespace bcache {
@@ -38,7 +40,36 @@ bool is_source_file(const std::string& arg) {
 }
 }  // namespace
 
-ghs_wrapper_t::ghs_wrapper_t(const string_list_t& args) : gcc_wrapper_t(args) {
+ghs_wrapper_t::ghs_wrapper_t(const file::exe_path_t& exe_path, const string_list_t& args)
+    : gcc_wrapper_t(exe_path, args) {
+}
+
+string_list_t ghs_wrapper_t::get_include_files(const std::string& std_err) const {
+  // Turn the std_err string into a list of strings.
+  // TODO(m): Is this correct on Windows for instance?
+  string_list_t lines(std_err, "\n");
+
+  // Extract all unique include paths. Include path references in std_err start with zero or more
+  // spaces followed by the full path. In the regex we also trim leading and trailing whitespaces
+  // from the path, just for good measure.
+  const std::regex incpath_re("\\s*(.*[^\\s])\\s*");
+  std::set<std::string> includes;
+  for (const auto& line : lines) {
+    std::smatch match;
+    if (std::regex_match(line, match, incpath_re)) {
+      if (match.size() == 2) {
+        const auto& include = match[1].str();
+        includes.insert(file::resolve_path(include));
+      }
+    }
+  }
+
+  // Convert the set of includes to a list of strings.
+  string_list_t result;
+  for (const auto& include : includes) {
+    result += include;
+  }
+  return result;
 }
 
 bool ghs_wrapper_t::can_handle_command() {
@@ -55,11 +86,46 @@ bool ghs_wrapper_t::can_handle_command() {
                                                    "cxrh850",
                                                    "cxintrh850"};
 
-  const auto cmd = lower_case(file::get_file_part(m_args[0], false));
+  const auto cmd = lower_case(file::get_file_part(m_exe_path.real_path(), false));
 
   return std::find_if(supported.begin(), supported.end(), [&cmd](const std::string& s) {
            return cmd.find(s) != std::string::npos;
          }) != supported.end();
+}
+
+string_list_t ghs_wrapper_t::get_capabilities() {
+  // GHS compilers implicitly create target directories for object files.
+  return gcc_wrapper_t::get_capabilities() + "create_target_dirs";
+}
+
+std::string ghs_wrapper_t::get_program_id() {
+  // Getting a version string from the GHS compiler by passing "--version" is less than trivial. For
+  // instance you need to pass valid -bsp and -os_dir arguments, and a dummy source file that does
+  // not exist (otherwise it will fail or actually perform the compilation), and then the output is
+  // sent to stderr instead of stdout.
+
+  // Instead, we fall back to the default program ID logic (i.e. hash the program binary).
+  const auto program_version_info = program_wrapper_t::get_program_id();
+
+  // Try to retrieve the version information for the OS files.
+  std::string os_dir;
+  for (const auto& arg : m_args) {
+    if (arg.substr(0, 8) == "-os_dir=") {
+      os_dir = arg.substr(8);
+    }
+  }
+  std::string os_version_info;
+  if (!os_dir.empty()) {
+    // There should be a header file called ${OS_DIR}/INTEGRITY-include/INTEGRITY_version.h that
+    // contains version information.
+    const auto os_version_file =
+        file::append_path(file::append_path(os_dir, "INTEGRITY-include"), "INTEGRITY_version.h");
+    if (file::file_exists(os_version_file)) {
+      os_version_info = file::read(os_version_file);
+    }
+  }
+
+  return HASH_VERSION + program_version_info + os_version_info;
 }
 
 string_list_t ghs_wrapper_t::get_relevant_arguments() {
@@ -102,40 +168,5 @@ std::map<std::string, std::string> ghs_wrapper_t::get_relevant_env_vars() {
   // TODO(m): What environment variables can affect the build result?
   std::map<std::string, std::string> env_vars;
   return env_vars;
-}
-
-std::string ghs_wrapper_t::get_program_id() {
-  // Getting a version string from the GHS compiler by passing "--version" is less than trivial. For
-  // instance you need to pass valid -bsp and -os_dir arguments, and a dummy source file that does
-  // not exist (otherwise it will fail or actually perform the compilation), and then the output is
-  // sent to stderr instead of stdout.
-
-  // Instead, we fall back to the default program ID logic (i.e. hash the program binary).
-  const auto program_version_info = program_wrapper_t::get_program_id();
-
-  // Try to retrieve the version information for the OS files.
-  std::string os_dir;
-  for (const auto& arg : m_args) {
-    if (arg.substr(0, 8) == "-os_dir=") {
-      os_dir = arg.substr(8);
-    }
-  }
-  std::string os_version_info;
-  if (!os_dir.empty()) {
-    // There should be a header file called ${OS_DIR}/INTEGRITY-include/INTEGRITY_version.h that
-    // contains version information.
-    const auto os_version_file =
-        file::append_path(file::append_path(os_dir, "INTEGRITY-include"), "INTEGRITY_version.h");
-    if (file::file_exists(os_version_file)) {
-      os_version_info = file::read(os_version_file);
-    }
-  }
-
-  return HASH_VERSION + program_version_info + os_version_info;
-}
-
-string_list_t ghs_wrapper_t::get_capabilities() {
-  // GHS compilers implicitly create target directories for object files.
-  return gcc_wrapper_t::get_capabilities() + "create_target_dirs";
 }
 }  // namespace bcache

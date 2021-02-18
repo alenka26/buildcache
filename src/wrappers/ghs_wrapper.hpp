@@ -28,15 +28,17 @@ namespace bcache {
 /// The GHS compiler is fairly compatible with the GCC wrapper, so we derive from it.
 class ghs_wrapper_t : public gcc_wrapper_t {
 public:
-  ghs_wrapper_t(const string_list_t& args);
+  ghs_wrapper_t(const file::exe_path_t& exe_path, const string_list_t& args);
 
   bool can_handle_command() override;
 
 private:
+  string_list_t get_include_files(const std::string& std_err) const override;
+
+  string_list_t get_capabilities() override;
+  std::string get_program_id() override;
   string_list_t get_relevant_arguments() override;
   std::map<std::string, std::string> get_relevant_env_vars() override;
-  std::string get_program_id() override;
-  string_list_t get_capabilities() override;
 };
 }  // namespace bcache
 

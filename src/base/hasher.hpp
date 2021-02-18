@@ -20,6 +20,8 @@
 #ifndef BUILDCACHE_HASHER_HPP_
 #define BUILDCACHE_HASHER_HPP_
 
+#include <base/string_list.hpp>
+
 #include <cstdint>
 
 #include <map>
@@ -55,6 +57,14 @@ public:
   hasher_t();
   ~hasher_t();
 
+  /// @brief Copy the hash state into a new hasher_t object.
+  /// @param other The source state to be duplicated.
+  hasher_t(const hasher_t& other);
+
+  /// @brief Copy the hash state to an existing hasher_t object.
+  /// @param other The source state to be duplicated.
+  hasher_t& operator=(const hasher_t& other);
+
   /// @brief Update the hash with more data.
   /// @param data Pointer to the data to hash.
   /// @param size The number of bytes to hash.
@@ -65,6 +75,10 @@ public:
   void update(const std::string& text) {
     update(text.data(), text.size());
   }
+
+  /// @brief Update the hash with more data.
+  /// @param data The data to hash.
+  void update(const string_list_t& data);
 
   /// @brief Update the hash with more data.
   /// @param data The data to hash.
@@ -82,6 +96,12 @@ public:
   /// @param path Path to a file that contains the data to hash.
   /// @throws runtime_error if the operation could not be completed.
   void update_from_file_deterministic(const std::string& path);
+
+  /// @brief Update the hash with a separator sequence.
+  ///
+  /// Injecting a separator sequence between other data items is useful for avoiding hash collisions
+  /// due to similarities of adjacent elements (e.g. "hello","world" v.s. "hell","oworld").
+  void inject_separator();
 
   /// @brief Finalize the hash calculation.
   /// @returns the result of the hash.

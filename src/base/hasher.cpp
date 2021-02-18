@@ -31,6 +31,13 @@
 
 namespace bcache {
 namespace {
+// The separator sequence is chosen to be fairly unlikely to occurr in natural data. Since most of
+// the data that we hash (especially in adjacent chunks) are UTF-8 encoded strings, we use a byte
+// sequence that is invalid UTF-8 and contains zeros and other control characters that should not
+// occurr in regular text.
+const size_t ITEM_SEPARATOR_SIZE = 11;
+const unsigned char ITEM_SEPARATOR[ITEM_SEPARATOR_SIZE] = {42, 0, 254, 1, 5, 7, 195, 40, 3, 0, 14};
+
 bool is_ar_data(const std::string& data) {
   const char AR_SIGNATURE[] = {0x21, 0x3c, 0x61, 0x72, 0x63, 0x68, 0x3e, 0x0a};
   return (data.size() >= 8 && std::equal(data.cbegin(), data.cbegin() + 8, &AR_SIGNATURE[0]));
@@ -66,9 +73,28 @@ hasher_t::~hasher_t() {
   XXH3_freeState(reinterpret_cast<XXH3_state_t*>(m_state));
 }
 
+hasher_t::hasher_t(const hasher_t& other) {
+  m_state = XXH3_createState();
+  XXH3_copyState(reinterpret_cast<XXH3_state_t*>(m_state),
+                 reinterpret_cast<const XXH3_state_t*>(other.m_state));
+}
+
+hasher_t& hasher_t::operator=(const hasher_t& other) {
+  XXH3_copyState(reinterpret_cast<XXH3_state_t*>(m_state),
+                 reinterpret_cast<const XXH3_state_t*>(other.m_state));
+  return *this;
+}
+
 void hasher_t::update(const void* data, const size_t size) {
   if (XXH3_128bits_update(reinterpret_cast<XXH3_state_t*>(m_state), data, size) == XXH_ERROR) {
     throw std::runtime_error("Hash update failure.");
+  }
+}
+
+void hasher_t::update(const string_list_t& data) {
+  for (const auto& item : data) {
+    update(item);
+    inject_separator();
   }
 }
 
@@ -77,7 +103,9 @@ void hasher_t::update(const std::map<std::string, std::string>& data) {
   // order, so the hash will always be the same for the same map contents.
   for (const auto& item : data) {
     update(item.first);
+    inject_separator();
     update(item.second);
+    inject_separator();
   }
 }
 
@@ -86,6 +114,7 @@ void hasher_t::update_from_file(const std::string& path) {
   // less memory, and it should be nicer to the CPU caches).
   const auto file_data = file::read(path);
   update(file_data);
+  inject_separator();
 }
 
 void hasher_t::update_from_file_deterministic(const std::string& path) {
@@ -95,6 +124,11 @@ void hasher_t::update_from_file_deterministic(const std::string& path) {
   } else {
     update(file_data);
   }
+  inject_separator();
+}
+
+void hasher_t::inject_separator() {
+  update(ITEM_SEPARATOR, ITEM_SEPARATOR_SIZE);
 }
 
 void hasher_t::update_from_ar_data(const std::string& data) {

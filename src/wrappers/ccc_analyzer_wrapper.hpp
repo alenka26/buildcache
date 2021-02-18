@@ -28,13 +28,13 @@ namespace bcache {
 /// The analyzer runs GCC/Clang under the hood, so we inherit from the GCC wrapper.
 class ccc_analyzer_wrapper_t : public gcc_wrapper_t {
 public:
-  ccc_analyzer_wrapper_t(const string_list_t& args);
+  ccc_analyzer_wrapper_t(const file::exe_path_t& exe_path, const string_list_t& args);
 
   bool can_handle_command() override;
 
 private:
-  std::map<std::string, std::string> get_relevant_env_vars() override;
   std::map<std::string, expected_file_t> get_build_files() override;
+  std::map<std::string, std::string> get_relevant_env_vars() override;
   sys::run_result_t run_for_miss() override;
 
   static const int MAX_NUM_REPORTS = 10;

@@ -1,7 +1,8 @@
-# BuildCache [![Build Status](https://travis-ci.com/mbitsnbites/buildcache.svg?branch=master)](https://travis-ci.com/mbitsnbites/buildcache)
+# BuildCache [![Build and Test](https://github.com/mbitsnbites/buildcache/workflows/Build%20and%20Test/badge.svg)](https://github.com/mbitsnbites/buildcache/actions)
 
-This is a simple compiler accelerator that caches and reuses build results to
-avoid unnecessary re-compilations, and thereby speeding up the build process.
+BuildCache is an advanced compiler accelerator that caches and reuses build
+results to avoid unnecessary re-compilations, and thereby speeding up the build
+process.
 
 It is similar in spirit to [ccache](https://ccache.samba.org/),
 [sccache](https://github.com/mozilla/sccache) and
@@ -26,9 +27,10 @@ Pre-built binaries of BuildCache can be downloaded [here](https://github.com/mbi
     [rendered images](https://en.wikipedia.org/wiki/Rendering_(computer_graphics)),
     etc).
 * A fast local file system cache.
+  * Suppports both preprocessor-based and fast preprocessorless cache lookup.
 * Can optionally use a remote, shared server as a second level cache.
-* Optional compression with [LZ4](https://github.com/lz4/lz4) or
-  [ZSTD](https://github.com/facebook/zstd) (almost negligable overhead).
+* Compression with [LZ4](https://github.com/lz4/lz4) or optionally
+  [ZSTD](https://github.com/facebook/zstd) (with negligable overhead).
 
 
 ### Supported compilers and languages
@@ -40,6 +42,7 @@ Currently the following compilers and languages are supported:
 | [GCC](https://gcc.gnu.org/) | C, C++ | Built-in |
 | [Clang](https://clang.llvm.org/) | C, C++ | Built-in |
 | [Microsoft Visual C++](https://visualstudio.microsoft.com/vs/features/cplusplus/) | C, C++ | Built-in |
+| [clang-cl](https://clang.llvm.org/docs/UsersManual.html#clang-cl) | C, C++ | Built-in |
 | [Green Hills Optimizing Compilers](https://www.ghs.com/products/compiler.html) | C, C++ | Built-in |
 | [TI TMS320C6000 Optimizing Compiler](http://www.ti.com/tool/C6000-CGT) | C, C++ | Built-in |
 | [TI ARM Optimizing C/C++ Compiler](http://www.ti.com/tool/ARM-CGT) | C, C++ | Built-in |

@@ -34,7 +34,9 @@ namespace bcache {
 /// corrsponding methods in a Lua script.
 class lua_wrapper_t : public program_wrapper_t {
 public:
-  lua_wrapper_t(const string_list_t& args, const std::string& lua_script_path);
+  lua_wrapper_t(const file::exe_path_t& exe_path,
+                const string_list_t& args,
+                const std::string& lua_script_path);
 
   bool can_handle_command() override;
 
@@ -69,11 +71,13 @@ private:
 
   void resolve_args() override;
   string_list_t get_capabilities() override;
-  std::string preprocess_source() override;
+  std::map<std::string, expected_file_t> get_build_files() override;
+  std::string get_program_id() override;
   string_list_t get_relevant_arguments() override;
   std::map<std::string, std::string> get_relevant_env_vars() override;
-  std::string get_program_id() override;
-  std::map<std::string, expected_file_t> get_build_files() override;
+  string_list_t get_input_files() override;
+  std::string preprocess_source() override;
+  string_list_t get_implicit_input_files() override;
   sys::run_result_t run_for_miss() override;
 
   runner_t m_runner;

@@ -25,6 +25,7 @@
 #include <sys/perf_utils.hpp>
 #include <sys/sys_utils.hpp>
 #include <wrappers/ccc_analyzer_wrapper.hpp>
+#include <wrappers/clang_cl_wrapper.hpp>
 #include <wrappers/gcc_wrapper.hpp>
 #include <wrappers/ghs_wrapper.hpp>
 #include <wrappers/lua_wrapper.hpp>
@@ -63,9 +64,8 @@ bool is_lua_script(const std::string& script_path) {
 }
 
 std::unique_ptr<bcache::program_wrapper_t> find_suitable_wrapper(
+    const bcache::file::exe_path_t& exe_path,
     const bcache::string_list_t& args) {
-  const auto& true_exe_path = args[0];
-
   std::unique_ptr<bcache::program_wrapper_t> wrapper;
 
   // Try Lua wrappers first (so you can override internal wrappers).
@@ -78,10 +78,11 @@ std::unique_ptr<bcache::program_wrapper_t> find_suitable_wrapper(
         const auto& script_path = file_info.path();
         if ((!file_info.is_dir()) && is_lua_script(script_path)) {
           // Check if the given wrapper can handle this command (first match wins).
-          wrapper.reset(new bcache::lua_wrapper_t(args, script_path));
+          wrapper.reset(new bcache::lua_wrapper_t(exe_path, args, script_path));
           if (wrapper->can_handle_command()) {
             bcache::debug::log(bcache::debug::DEBUG)
-                << "Found matching Lua wrapper for " << true_exe_path << ": " << script_path;
+                << "Found matching Lua wrapper for " << exe_path.virtual_path() << ": "
+                << script_path;
             break;
           }
           wrapper = nullptr;
@@ -95,21 +96,24 @@ std::unique_ptr<bcache::program_wrapper_t> find_suitable_wrapper(
 
   // If no Lua wrappers were found, try built in wrappers.
   if (!wrapper) {
-    wrapper.reset(new bcache::gcc_wrapper_t(args));
+    wrapper.reset(new bcache::clang_cl_wrapper_t(exe_path, args));
     if (!wrapper->can_handle_command()) {
-      wrapper.reset(new bcache::ghs_wrapper_t(args));
+      wrapper.reset(new bcache::gcc_wrapper_t(exe_path, args));
       if (!wrapper->can_handle_command()) {
-        wrapper.reset(new bcache::msvc_wrapper_t(args));
+        wrapper.reset(new bcache::ghs_wrapper_t(exe_path, args));
         if (!wrapper->can_handle_command()) {
-          wrapper.reset(new bcache::ti_c6x_wrapper_t(args));
+          wrapper.reset(new bcache::msvc_wrapper_t(exe_path, args));
           if (!wrapper->can_handle_command()) {
-            wrapper.reset(new bcache::ti_arm_cgt_wrapper_t(args));
+            wrapper.reset(new bcache::ti_c6x_wrapper_t(exe_path, args));
             if (!wrapper->can_handle_command()) {
-              wrapper.reset(new bcache::ti_arp32_wrapper_t(args));
+              wrapper.reset(new bcache::ti_arm_cgt_wrapper_t(exe_path, args));
               if (!wrapper->can_handle_command()) {
-                wrapper.reset(new bcache::ccc_analyzer_wrapper_t(args));
+                wrapper.reset(new bcache::ti_arp32_wrapper_t(exe_path, args));
                 if (!wrapper->can_handle_command()) {
-                  wrapper = nullptr;
+                  wrapper.reset(new bcache::ccc_analyzer_wrapper_t(exe_path, args));
+                  if (!wrapper->can_handle_command()) {
+                    wrapper = nullptr;
+                  }
                 }
               }
             }
@@ -178,6 +182,8 @@ std::unique_ptr<bcache::program_wrapper_t> find_suitable_wrapper(
               << "\n";
     std::cout << "  BUILDCACHE_DEBUG:                  " << bcache::config::debug() << "\n";
     std::cout << "  BUILDCACHE_DIR:                    " << bcache::config::dir() << "\n";
+    std::cout << "  BUILDCACHE_DIRECT_MODE:            "
+              << (bcache::config::direct_mode() ? "true" : "false") << "\n";
     std::cout << "  BUILDCACHE_DISABLE:                "
               << (bcache::config::disable() ? "true" : "false") << "\n";
     std::cout << "  BUILDCACHE_HARD_LINKS:             "
@@ -253,11 +259,11 @@ std::unique_ptr<bcache::program_wrapper_t> find_suitable_wrapper(
 
   // Print a list of third party components.
   std::cout << "\nThird party components:\n";
+  std::cout << "  cJSON " << CJSON_VERSION_MAJOR << "." << CJSON_VERSION_MINOR << "."
+            << CJSON_VERSION_PATCH << "\n";
 #ifdef ENABLE_S3
   std::cout << "  cpp-base64 2.rc.04\n";
 #endif
-  std::cout << "  cJSON " << CJSON_VERSION_MAJOR << "." << CJSON_VERSION_MINOR << "."
-            << CJSON_VERSION_PATCH << "\n";
   std::cout << "  hiredis " << HIREDIS_MAJOR << "." << HIREDIS_MINOR << "." << HIREDIS_PATCH
             << "\n";
 #ifdef ENABLE_S3
@@ -266,12 +272,12 @@ std::unique_ptr<bcache::program_wrapper_t> find_suitable_wrapper(
   std::cout << "  lua " << LUA_VERSION_MAJOR << "." << LUA_VERSION_MINOR << "."
             << LUA_VERSION_RELEASE << "\n";
   std::cout << "  lz4 " << LZ4_VERSION_STRING << "\n";
-  std::cout << "  zstd " << ZSTD_VERSION_STRING << "\n";
-  std::cout << "  xxhash " << XXH_VERSION_MAJOR << "." << XXH_VERSION_MINOR << "."
-            << XXH_VERSION_RELEASE << "\n";
 #ifdef USE_MINGW_THREADS
   std::cout << "  mingw-std-threads\n";
 #endif
+  std::cout << "  xxhash " << XXH_VERSION_MAJOR << "." << XXH_VERSION_MINOR << "."
+            << XXH_VERSION_RELEASE << "\n";
+  std::cout << "  zstd " << ZSTD_VERSION_STRING << "\n";
 
   std::exit(0);
 }
@@ -313,40 +319,42 @@ std::unique_ptr<bcache::program_wrapper_t> find_suitable_wrapper(
       throw std::runtime_error("Missing arguments.");
     }
 
+    // Find the true path to the executable file. This affects things like if we can match the
+    // compiler name or not, and what version string we get. We also want to avoid incorrectly
+    // identifying other compiler accelerators (e.g. ccache) as actual compilers.
+    // TODO(m): This call may throw an exception, which currently means that we will not even try
+    // to run the original command. At the same time this is a protection against endless symlink
+    // recursion. Figure something out!
+    PERF_START(FIND_EXECUTABLE);
+    const auto exe_path = bcache::file::find_executable(args[0], BUILDCACHE_EXE_NAME);
+    PERF_STOP(FIND_EXECUTABLE);
+
+    // Replace the command with the virtual exe path (i.e. the path to the program that will be
+    // executed upon a cache miss). Most of the following operations rely on having a correct
+    // executable path. Also, this is important to avoid recursions when we are invoked from a
+    // symlink, for instance.
+    args[0] = exe_path.virtual_path();
+
     // Is the caching mechanism disabled?
     if (bcache::config::disable()) {
       // Bypass all the cache logic and call the intended command directly.
       auto result = bcache::sys::run(args, false);
       return_code = result.return_code;
     } else {
-      // Find the true path to the executable file. This affects things like if we can match the
-      // compiler name or not, and what version string we get. We also want to avoid incorrectly
-      // identifying other compiler accelerators (e.g. ccache) as actual compilers.
-      // TODO(m): This call may throw an exception, which currently means that we will not even try
-      // to run the original command. At the same time this is a protection against endless symlink
-      // recursion. Figure something out!
-      PERF_START(FIND_EXECUTABLE);
-      const auto true_exe_path = bcache::file::find_executable(args[0], BUILDCACHE_EXE_NAME);
-      PERF_STOP(FIND_EXECUTABLE);
-
-      // Replace the command with the true exe path. Most of the following operations rely on having
-      // a correct executable path. Also, this is important to avoid recursions when we are invoked
-      // from a symlink, for instance.
-      args[0] = true_exe_path;
-
       try {
         return_code = 1;
 
         // Select a matching compiler wrapper.
         PERF_START(FIND_WRAPPER);
-        auto wrapper = find_suitable_wrapper(args);
+        auto wrapper = find_suitable_wrapper(exe_path, args);
         PERF_STOP(FIND_WRAPPER);
 
         // Run the wrapper, if any.
         if (wrapper) {
           was_wrapped = wrapper->handle_command(return_code);
         } else {
-          bcache::debug::log(bcache::debug::INFO) << "No suitable wrapper for " << true_exe_path;
+          bcache::debug::log(bcache::debug::INFO)
+              << "No suitable wrapper for " << exe_path.virtual_path();
         }
       } catch (const std::exception& e) {
         bcache::debug::log(bcache::debug::ERROR) << "Unexpected error: " << e.what();

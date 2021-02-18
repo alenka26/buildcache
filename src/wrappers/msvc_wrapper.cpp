@@ -29,6 +29,8 @@
 #include <cstdlib>
 #include <fstream>
 #include <locale>
+#include <regex>
+#include <set>
 #include <stdexcept>
 
 namespace bcache {
@@ -112,11 +114,45 @@ string_list_t make_preprocessor_cmd(const string_list_t& args) {
     preprocess_args += std::string("/E");
   }
 
+  // Add argument for listing include files (used for direct mode).
+  preprocess_args += std::string("/showIncludes");
+
   return preprocess_args;
+}
+
+string_list_t get_include_files(const std::string& std_err) {
+  // Turn the std_err string into a list of strings.
+  // TODO(m): Is this correct on Windows for instance?
+  string_list_t lines(std_err, "\n");
+
+  // Extract all unique include paths. Include path references in std_err start with the prefix
+  // "Note: including file:", followed by one or more space characters, and finally the full path.
+  // In the regex wealso trim trailing whitespaces from the path, just for good measure.
+  //
+  // See: https://docs.microsoft.com/en-us/cpp/build/reference/showincludes-list-include-files
+  const std::regex incpath_re("\\s*Note: including file:\\s+(.*[^\\s])\\s*");
+  std::set<std::string> includes;
+  for (const auto& line : lines) {
+    std::smatch match;
+    if (std::regex_match(line, match, incpath_re)) {
+      if (match.size() == 2) {
+        const auto& include = match[1].str();
+        includes.insert(file::resolve_path(include));
+      }
+    }
+  }
+
+  // Convert the set of includes to a list of strings.
+  string_list_t result;
+  for (const auto& include : includes) {
+    result += include;
+  }
+  return result;
 }
 }  // namespace
 
-msvc_wrapper_t::msvc_wrapper_t(const string_list_t& args) : program_wrapper_t(args) {
+msvc_wrapper_t::msvc_wrapper_t(const file::exe_path_t& exe_path, const string_list_t& args)
+    : program_wrapper_t(exe_path, args) {
 }
 
 void msvc_wrapper_t::resolve_args() {
@@ -137,7 +173,7 @@ void msvc_wrapper_t::resolve_args() {
                                   new std::codecvt_utf16<wchar_t, 0x10ffff, std::consume_header>));
           std::wstring wline;
           while (std::getline(wfile, wline)) {
-            m_resolved_args += string_list_t::split_args(ucs2_to_utf8(wline));
+            m_resolved_args += string_list_t::split_args(strip(ucs2_to_utf8(wline)));
           }
         } else {
           // Assume UTF-8.
@@ -145,7 +181,7 @@ void msvc_wrapper_t::resolve_args() {
           file.seekg(0);
           std::string line;
           while (std::getline(file, line)) {
-            m_resolved_args += string_list_t::split_args(line);
+            m_resolved_args += string_list_t::split_args(strip(line));
           }
         }
       }
@@ -157,44 +193,51 @@ void msvc_wrapper_t::resolve_args() {
 
 bool msvc_wrapper_t::can_handle_command() {
   // Is this the right compiler?
-  const auto cmd = lower_case(file::get_file_part(m_args[0], false));
+  const auto cmd = lower_case(file::get_file_part(m_exe_path.real_path(), false));
   return (cmd == "cl");
 }
 
 string_list_t msvc_wrapper_t::get_capabilities() {
-  // We can use hard links with MSVC since it will never overwrite already existing files.
-  return string_list_t{"hard_links"};
+  // direct_mode - We support direct mode.
+  // hard_links  - We can use hard links since MSVC will never overwrite already existing files.
+  return string_list_t{"direct_mode", "hard_links"};
 }
 
-std::string msvc_wrapper_t::preprocess_source() {
-  // Check if this is a compilation command that we support.
-  auto is_object_compilation = false;
-  auto has_object_output = false;
+std::map<std::string, expected_file_t> msvc_wrapper_t::get_build_files() {
+  std::map<std::string, expected_file_t> files;
+  auto found_object_file = false;
   for (const auto& arg : m_resolved_args) {
-    if (arg_equals(arg, "c")) {
-      is_object_compilation = true;
-    } else if (arg_starts_with(arg, "Fo") && (is_object_file(file::get_extension(arg)))) {
-      has_object_output = true;
-    } else if (arg_equals(arg, "Zi") || arg_equals(arg, "ZI")) {
-      throw std::runtime_error("PDB generation is not supported.");
+    if (arg_starts_with(arg, "Fo") && is_object_file(file::get_extension(arg))) {
+      if (found_object_file) {
+        throw std::runtime_error("Only a single target object file can be specified.");
+      }
+      files["object"] = {drop_leading_colon(arg.substr(3)), true};
+      found_object_file = true;
     }
   }
-  if ((!is_object_compilation) || (!has_object_output)) {
-    throw std::runtime_error("Unsupported complation command.");
+  if (!found_object_file) {
+    throw std::runtime_error("Unable to get the target object file.");
   }
+  return files;
+}
 
-  // Disable unwanted printing of source file name in Visual Studio.
+std::string msvc_wrapper_t::get_program_id() {
+  // TODO(m): Add things like executable file size too.
+
+  // Get the version string for the compiler.
+  // Just calling "cl.exe" will return the version information. Note, though, that the version
+  // information is given on stderr.
   scoped_unset_env_t scoped_off(ENV_VS_OUTPUT_REDIRECTION);
 
-  // Run the preprocessor step.
-  const auto preprocessor_args = make_preprocessor_cmd(m_resolved_args);
-  auto result = sys::run(preprocessor_args);
-  if (result.return_code != 0) {
-    throw std::runtime_error("Preprocessing command was unsuccessful.");
+  string_list_t version_args;
+  version_args += m_args[0];
+
+  const auto result = sys::run(version_args, true);
+  if (result.std_err.empty()) {
+    throw std::runtime_error("Unable to get the compiler version information string.");
   }
 
-  // Return the preprocessed file (from stdout).
-  return result.std_out;
+  return HASH_VERSION + result.std_err;
 }
 
 string_list_t msvc_wrapper_t::get_relevant_arguments() {
@@ -241,41 +284,52 @@ std::map<std::string, std::string> msvc_wrapper_t::get_relevant_env_vars() {
   return env_vars;
 }
 
-std::string msvc_wrapper_t::get_program_id() {
-  // TODO(m): Add things like executable file size too.
-
-  // Get the version string for the compiler.
-  // Just calling "cl.exe" will return the version information. Note, though, that the version
-  // information is given on stderr.
-  scoped_unset_env_t scoped_off(ENV_VS_OUTPUT_REDIRECTION);
-
-  string_list_t version_args;
-  version_args += m_args[0];
-
-  const auto result = sys::run(version_args, true);
-  if (result.std_err.empty()) {
-    throw std::runtime_error("Unable to get the compiler version information string.");
-  }
-
-  return HASH_VERSION + result.std_err;
-}
-
-std::map<std::string, expected_file_t> msvc_wrapper_t::get_build_files() {
-  std::map<std::string, expected_file_t> files;
-  auto found_object_file = false;
+string_list_t msvc_wrapper_t::get_input_files() {
+  string_list_t input_files;
   for (const auto& arg : m_resolved_args) {
-    if (arg_starts_with(arg, "Fo") && (is_object_file(file::get_extension(arg)))) {
-      if (found_object_file) {
-        throw std::runtime_error("Only a single target object file can be specified.");
-      }
-      files["object"] = {drop_leading_colon(arg.substr(3)), true};
-      found_object_file = true;
+    if (is_source_file(arg)) {
+      input_files += file::resolve_path(arg);
     }
   }
-  if (!found_object_file) {
-    throw std::runtime_error("Unable to get the target object file.");
+  return input_files;
+}
+
+std::string msvc_wrapper_t::preprocess_source() {
+  // Check if this is a compilation command that we support.
+  auto is_object_compilation = false;
+  auto has_object_output = false;
+  for (const auto& arg : m_resolved_args) {
+    if (arg_equals(arg, "c")) {
+      is_object_compilation = true;
+    } else if (arg_starts_with(arg, "Fo") && (is_object_file(file::get_extension(arg)))) {
+      has_object_output = true;
+    } else if (arg_equals(arg, "Zi") || arg_equals(arg, "ZI")) {
+      throw std::runtime_error("PDB generation is not supported.");
+    }
   }
-  return files;
+  if ((!is_object_compilation) || (!has_object_output)) {
+    throw std::runtime_error("Unsupported complation command.");
+  }
+
+  // Disable unwanted printing of source file name in Visual Studio.
+  scoped_unset_env_t scoped_off(ENV_VS_OUTPUT_REDIRECTION);
+
+  // Run the preprocessor step.
+  const auto preprocessor_args = make_preprocessor_cmd(m_resolved_args);
+  auto result = sys::run(preprocessor_args);
+  if (result.return_code != 0) {
+    throw std::runtime_error("Preprocessing command was unsuccessful.");
+  }
+
+  // Collect all the input files. They are reported in std_err.
+  m_implicit_input_files = get_include_files(result.std_err);
+
+  // Return the preprocessed file (from stdout).
+  return result.std_out;
+}
+
+string_list_t msvc_wrapper_t::get_implicit_input_files() {
+  return m_implicit_input_files;
 }
 
 sys::run_result_t msvc_wrapper_t::run_for_miss() {

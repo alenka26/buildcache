@@ -245,6 +245,30 @@ int l_get_file_info(lua_State* state) {
   return 1;
 }
 
+int l_log_debug(lua_State* state) {
+  const auto msg = pop_string(state);
+  debug::log(debug::DEBUG) << msg;
+  return 0;
+}
+
+int l_log_info(lua_State* state) {
+  const auto msg = pop_string(state);
+  debug::log(debug::INFO) << msg;
+  return 0;
+}
+
+int l_log_error(lua_State* state) {
+  const auto msg = pop_string(state);
+  debug::log(debug::ERROR) << msg;
+  return 0;
+}
+
+int l_log_fatal(lua_State* state) {
+  const auto msg = pop_string(state);
+  debug::log(debug::FATAL) << msg;
+  return 0;
+}
+
 const luaL_Reg BCACHE_LIB_FUNCS[] = {{"split_args", l_split_args},
                                      {"run", l_run},
                                      {"dir_exists", l_dir_exists},
@@ -253,6 +277,10 @@ const luaL_Reg BCACHE_LIB_FUNCS[] = {{"split_args", l_split_args},
                                      {"get_file_part", l_get_file_part},
                                      {"get_dir_part", l_get_dir_part},
                                      {"get_file_info", l_get_file_info},
+                                     {"log_debug", l_log_debug},
+                                     {"log_info", l_log_info},
+                                     {"log_error", l_log_error},
+                                     {"log_fatal", l_log_fatal},
                                      {NULL, NULL}};
 
 int luaopen_bcache(lua_State* state) {
@@ -462,15 +490,17 @@ bool lua_wrapper_t::runner_t::call(const std::string& func) {
   return true;
 }
 
-lua_wrapper_t::lua_wrapper_t(const string_list_t& args, const std::string& lua_script_path)
-    : program_wrapper_t(args), m_runner(lua_script_path, args) {
+lua_wrapper_t::lua_wrapper_t(const file::exe_path_t& exe_path,
+                             const string_list_t& args,
+                             const std::string& lua_script_path)
+    : program_wrapper_t(exe_path, args), m_runner(lua_script_path, args) {
 }
 
 bool lua_wrapper_t::can_handle_command() {
   auto result = false;
   try {
     // First check: regex match against program name.
-    if (is_program_match(m_runner.script(), m_args[0])) {
+    if (is_program_match(m_runner.script(), m_exe_path.real_path())) {
       // Second check: Call can_handle_command(), if defined.
       if (m_runner.call("can_handle_command")) {
         result = pop_bool(m_runner.state());
@@ -499,11 +529,19 @@ string_list_t lua_wrapper_t::get_capabilities() {
   return program_wrapper_t::get_capabilities();
 }
 
-std::string lua_wrapper_t::preprocess_source() {
-  if (m_runner.call("preprocess_source")) {
+std::map<std::string, expected_file_t> lua_wrapper_t::get_build_files() {
+  if (m_runner.call("get_build_files")) {
+    const auto files_map = pop_map(m_runner.state());
+    return to_expected_files_map(files_map);
+  }
+  return program_wrapper_t::get_build_files();
+}
+
+std::string lua_wrapper_t::get_program_id() {
+  if (m_runner.call("get_program_id")) {
     return pop_string(m_runner.state());
   }
-  return program_wrapper_t::preprocess_source();
+  return program_wrapper_t::get_program_id();
 }
 
 string_list_t lua_wrapper_t::get_relevant_arguments() {
@@ -520,19 +558,25 @@ std::map<std::string, std::string> lua_wrapper_t::get_relevant_env_vars() {
   return program_wrapper_t::get_relevant_env_vars();
 }
 
-std::string lua_wrapper_t::get_program_id() {
-  if (m_runner.call("get_program_id")) {
-    return pop_string(m_runner.state());
+string_list_t lua_wrapper_t::get_input_files() {
+  if (m_runner.call("get_input_files")) {
+    return pop_string_list(m_runner.state());
   }
-  return program_wrapper_t::get_program_id();
+  return program_wrapper_t::get_input_files();
 }
 
-std::map<std::string, expected_file_t> lua_wrapper_t::get_build_files() {
-  if (m_runner.call("get_build_files")) {
-    const auto files_map = pop_map(m_runner.state());
-    return to_expected_files_map(files_map);
+std::string lua_wrapper_t::preprocess_source() {
+  if (m_runner.call("preprocess_source")) {
+    return pop_string(m_runner.state());
   }
-  return program_wrapper_t::get_build_files();
+  return program_wrapper_t::preprocess_source();
+}
+
+string_list_t lua_wrapper_t::get_implicit_input_files() {
+  if (m_runner.call("get_implicit_input_files")) {
+    return pop_string_list(m_runner.state());
+  }
+  return program_wrapper_t::get_implicit_input_files();
 }
 
 sys::run_result_t lua_wrapper_t::run_for_miss() {

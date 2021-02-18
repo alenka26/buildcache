@@ -27,16 +27,40 @@
 
 namespace bcache {
 
-ccc_analyzer_wrapper_t::ccc_analyzer_wrapper_t(const string_list_t& args)
-    : gcc_wrapper_t(args), m_tmp_report_dir(file::get_temp_dir(), "") {
+ccc_analyzer_wrapper_t::ccc_analyzer_wrapper_t(const file::exe_path_t& exe_path,
+                                               const string_list_t& args)
+    : gcc_wrapper_t(exe_path, args), m_tmp_report_dir(file::get_temp_dir(), "") {
 }
 
 bool ccc_analyzer_wrapper_t::can_handle_command() {
-  const auto cmd = lower_case(file::get_file_part(m_args[0], true));
+  const auto cmd = lower_case(file::get_file_part(m_exe_path.real_path(), true));
 
   // We recognize ccc-analyzer and c++-analyzer.
   const std::regex ccc_analyzer_re("c(\\+\\+|cc)-analyzer");
   return std::regex_match(cmd, ccc_analyzer_re);
+}
+
+std::map<std::string, expected_file_t> ccc_analyzer_wrapper_t::get_build_files() {
+  auto files = gcc_wrapper_t::get_build_files();
+
+  // Get the target report path.
+  env_var_t report_dir("CCC_ANALYZER_HTML");
+  if (!report_dir) {
+    throw std::runtime_error("CCC_ANALYZER_HTML is not specified");
+  }
+
+  // We invent our own file names for the reports, since ccc-analyzer will create random file names
+  // that we can not know beforehand.
+  for (int i = 0; i < MAX_NUM_REPORTS; ++i) {
+    const auto file_name = "report-" + file::get_unique_id() + ".html";
+    m_report_paths[i] = file::append_path(report_dir.as_string(), file_name);
+
+    std::ostringstream file_id;
+    file_id << "ccc_analyzer_report_" << (i + 1);
+    files[file_id.str()] = {m_report_paths[i], false};
+  }
+
+  return files;
 }
 
 std::map<std::string, std::string> ccc_analyzer_wrapper_t::get_relevant_env_vars() {
@@ -63,29 +87,6 @@ std::map<std::string, std::string> ccc_analyzer_wrapper_t::get_relevant_env_vars
   }
 
   return env_vars;
-}
-
-std::map<std::string, expected_file_t> ccc_analyzer_wrapper_t::get_build_files() {
-  auto files = gcc_wrapper_t::get_build_files();
-
-  // Get the target report path.
-  env_var_t report_dir("CCC_ANALYZER_HTML");
-  if (!report_dir) {
-    throw std::runtime_error("CCC_ANALYZER_HTML is not specified");
-  }
-
-  // We invent our own file names for the reports, since ccc-analyzer will create random file names
-  // that we can not know beforehand.
-  for (int i = 0; i < MAX_NUM_REPORTS; ++i) {
-    const auto file_name = "report-" + file::get_unique_id() + ".html";
-    m_report_paths[i] = file::append_path(report_dir.as_string(), file_name);
-
-    std::ostringstream file_id;
-    file_id << "ccc_analyzer_report_" << (i + 1);
-    files[file_id.str()] = {m_report_paths[i], false};
-  }
-
-  return files;
 }
 
 sys::run_result_t ccc_analyzer_wrapper_t::run_for_miss() {

@@ -41,7 +41,6 @@
 #endif
 #include <direct.h>
 #include <shlobj.h>
-#include <sys/utime.h>
 #include <userenv.h>
 #include <windows.h>
 #undef ERROR
@@ -408,7 +407,7 @@ std::string resolve_path(const std::string& path) {
 #endif
 }
 
-std::string find_executable(const std::string& path, const std::string& exclude) {
+exe_path_t find_executable(const std::string& program, const std::string& exclude) {
   const auto extensions = get_exe_extensions();
 
   std::string file_to_find;
@@ -416,9 +415,9 @@ std::string find_executable(const std::string& path, const std::string& exclude)
   // Handle absolute and relative paths. Examples:
   //  - "C:\Foo\foo.exe"
   //  - "somedir/../mysubdir/foo"
-  if (is_absolute_path(path) || is_relateive_path(path)) {
+  if (is_absolute_path(program) || is_relateive_path(program)) {
     for (const auto& ext : extensions) {
-      const auto path_with_ext = path + ext;
+      auto path_with_ext = program + ext;
 
       // Return the full path unless it points to the excluded executable.
       auto true_path = resolve_path(path_with_ext);
@@ -427,17 +426,21 @@ std::string find_executable(const std::string& path, const std::string& exclude)
         continue;
       }
       if (lower_case(get_file_part(true_path, false)) != exclude) {
-        debug::log(debug::DEBUG) << "Found exe: " << true_path << " (looked for " << path << ")";
-        return true_path;
+        // TODO(m): We should canonicalize the virtual path (without resolving symbolic links).
+        const auto& virtual_path = path_with_ext;
+        debug::log(debug::DEBUG) << "Found exe: " << true_path << " (" << program << ", "
+                                 << virtual_path << ")";
+        return exe_path_t(true_path, virtual_path, program);
       }
 
       // ...otherwise search for the named file (which should be a symlink) in the PATH.
+      // This handles invokations of programs via symbolic links to the buildcache executable.
       file_to_find = get_file_part(path_with_ext);
       break;
     }
   } else {
     // The path is just a file name without a path.
-    file_to_find = path;
+    file_to_find = program;
   }
 
   if (!file_to_find.empty()) {
@@ -459,13 +462,14 @@ std::string find_executable(const std::string& path, const std::string& exclude)
     for (const auto& base_path : search_path) {
       for (const auto& ext : extensions) {
         const auto file_name = file_to_find + ext;
-        auto true_path = resolve_path(append_path(base_path, file_name));
+        auto virtual_path = append_path(base_path, file_name);
+        auto true_path = resolve_path(virtual_path);
         if ((!true_path.empty()) && file_exists(true_path)) {
           // Check that this is not the excluded file name.
           if (lower_case(get_file_part(true_path, false)) != exclude) {
             debug::log(debug::DEBUG)
-                << "Found exe: " << true_path << " (looked for " << file_name << ")";
-            return true_path;
+                << "Found exe: " << true_path << " (" << program << ", " << virtual_path << ")";
+            return exe_path_t(true_path, virtual_path, program);
           }
         }
       }
@@ -645,7 +649,20 @@ void link_or_copy(const std::string& from_path, const std::string& to_path) {
 
 void touch(const std::string& path) {
 #ifdef _WIN32
-  bool success = (_wutime64(utf8_to_ucs2(path).c_str(), nullptr) == 0);
+  bool success = false;
+  HANDLE h = CreateFileW(utf8_to_ucs2(path).c_str(),
+                         FILE_WRITE_ATTRIBUTES,
+                         FILE_SHARE_WRITE,
+                         0,
+                         OPEN_EXISTING,
+                         FILE_FLAG_BACKUP_SEMANTICS,
+                         0);
+  if (h) {
+    FILETIME mtime;
+    GetSystemTimeAsFileTime(&mtime);
+    success = SetFileTime(h, 0, 0, &mtime);
+    CloseHandle(h);
+  }
 #else
   bool success = (utime(path.c_str(), nullptr) == 0);
 #endif
@@ -726,6 +743,19 @@ void write(const std::string& data, const std::string& path) {
   if (bytes_left != 0U) {
     throw std::runtime_error("Unable to write the file.");
   }
+}
+
+void write_atomic(const std::string& data, const std::string& path) {
+  // 1) Write to a temporary file.
+  const auto base_path = get_dir_part(path);
+  auto tmp_file = tmp_file_t(base_path, ".tmp");
+  write(data, tmp_file.path());
+
+  // 2) Remove the target path if it already exists.
+  remove_file(path, true);
+
+  // 3) Move the temporary file to the target file name.
+  move(tmp_file.path(), path);
 }
 
 void append(const std::string& data, const std::string& path) {

@@ -21,6 +21,8 @@
 
 #include <base/debug_utils.hpp>
 #include <base/file_utils.hpp>
+#include <base/hasher.hpp>
+#include <cache/direct_mode_manifest.hpp>
 #include <config/configuration.hpp>
 #include <sys/perf_utils.hpp>
 #include <sys/sys_utils.hpp>
@@ -48,11 +50,72 @@ int64_t get_total_entry_size(const cache_entry_t& entry,
 }
 }  // namespace
 
-bool cache_t::lookup(const hasher_t::hash_t hash,
+bool cache_t::lookup_direct(const std::string& direct_hash,
+                            const std::map<std::string, expected_file_t>& expected_files,
+                            const bool allow_hard_links,
+                            const bool create_target_dirs,
+                            int& return_code) noexcept {
+  // Note: We don't want to propagate exceptions here, since that would result in a fall-back run of
+  // the wrapped program, without adding the result to the cache. Instead we treat cache lookup
+  // errors as cache misses, and thus we can re-populate the cache if there is a corrupted cache
+  // entry for instance.
+  std::string hash;
+  try {
+    // First lookup the manifest from the direct mode hash.
+    PERF_START(CACHE_LOOKUP);
+    const auto manifest = m_local_cache.lookup_direct(direct_hash);
+    PERF_STOP(CACHE_LOOKUP);
+
+    if (!manifest) {
+      throw std::runtime_error("No matching direct mode entry found");
+    }
+
+    // If we got this far we had a positive direct mode cache hit. The manifest contains the
+    // corresponding preprocessor mode cache entry hash.
+    hash = manifest.hash();
+    debug::log(debug::INFO) << "Direct mode cache hit (" << direct_hash << "): " << hash;
+    m_local_cache.update_stats(direct_hash, cache_stats_t::direct_hit());
+  } catch (const std::runtime_error& e) {
+    debug::log(debug::INFO) << "Direct mode cache miss (" << direct_hash << "): " << e.what();
+    m_local_cache.update_stats(direct_hash, cache_stats_t::direct_miss());
+    return false;
+  }
+
+  // With the preprocessor mode hash we can now do a regular lookup.
+  return lookup(hash, expected_files, allow_hard_links, create_target_dirs, return_code);
+}
+
+void cache_t::add_direct(const std::string& direct_hash,
+                         const std::string& hash,
+                         const string_list_t& implicit_input_files) {
+  try {
+    // Calculate the hashes for all the implicit input files.
+    std::map<std::string, std::string> files_with_hashes;
+    {
+      PERF_SCOPE(HASH_INCLUDE_FILES);
+      for (const auto& path : implicit_input_files) {
+        hasher_t hasher;
+        hasher.update_from_file(path);
+        files_with_hashes.insert(std::make_pair(path, hasher.final().as_string()));
+      }
+    }
+
+    // Create a direct mode manifest.
+    const auto manifest = direct_mode_manifest_t(hash, files_with_hashes);
+
+    // Add the direct mode entry to the local cache.
+    m_local_cache.add_direct(direct_hash, manifest);
+  } catch (const std::runtime_error& e) {
+    debug::log(debug::ERROR) << "Creation of direct mode entry " << direct_hash
+                             << " failed: " << e.what();
+  }
+}
+
+bool cache_t::lookup(const std::string& hash,
                      const std::map<std::string, expected_file_t>& expected_files,
                      const bool allow_hard_links,
                      const bool create_target_dirs,
-                     int& return_code) {
+                     int& return_code) noexcept {
   // Note: We don't want to propagate exceptions here, since that would result in a fall-back run of
   // the wrapped program, without adding the result to the cache. Instead we treat cache lookup
   // errors as cache misses, and thus we can re-populate the cache if there is a corrupted cache
@@ -65,7 +128,7 @@ bool cache_t::lookup(const hasher_t::hash_t hash,
       return true;
     }
   } catch (const std::runtime_error& e) {
-    debug::log(debug::ERROR) << "Local lookup of " << hash.as_string() << " failed: " << e.what();
+    debug::log(debug::ERROR) << "Local lookup of " << hash << " failed: " << e.what();
   }
 
   try {
@@ -75,13 +138,13 @@ bool cache_t::lookup(const hasher_t::hash_t hash,
       return true;
     }
   } catch (const std::runtime_error& e) {
-    debug::log(debug::ERROR) << "Remote lookup of " << hash.as_string() << " failed: " << e.what();
+    debug::log(debug::ERROR) << "Remote lookup of " << hash << " failed: " << e.what();
   }
 
   return false;
 }
 
-void cache_t::add(const hasher_t::hash_t hash,
+void cache_t::add(const std::string& hash,
                   const cache_entry_t& entry,
                   const std::map<std::string, expected_file_t>& expected_files,
                   const bool allow_hard_links) {
@@ -117,7 +180,7 @@ void cache_t::add(const hasher_t::hash_t hash,
   PERF_STOP(ADD_TO_CACHE);
 }
 
-bool cache_t::lookup_in_local_cache(const hasher_t::hash_t hash,
+bool cache_t::lookup_in_local_cache(const std::string& hash,
                                     const std::map<std::string, expected_file_t>& expected_files,
                                     const bool allow_hard_links,
                                     const bool create_target_dirs,
@@ -138,8 +201,7 @@ bool cache_t::lookup_in_local_cache(const hasher_t::hash_t hash,
   PERF_START(RETRIEVE_CACHED_FILES);
   for (const auto& file_id : cached_entry.file_ids()) {
     const auto& target_path = expected_files.at(file_id).path();
-    debug::log(debug::INFO) << "Cache hit (" << hash.as_string() << "): " << file_id << " => "
-                            << target_path;
+    debug::log(debug::INFO) << "Cache hit (" << hash << "): " << file_id << " => " << target_path;
 
     if (create_target_dirs) {
       file::create_dir_with_parents(file::get_dir_part(target_path));
@@ -158,7 +220,7 @@ bool cache_t::lookup_in_local_cache(const hasher_t::hash_t hash,
   return true;
 }
 
-bool cache_t::lookup_in_remote_cache(const hasher_t::hash_t hash,
+bool cache_t::lookup_in_remote_cache(const std::string& hash,
                                      const std::map<std::string, expected_file_t>& expected_files,
                                      const bool allow_hard_links,
                                      const bool create_target_dirs,
@@ -183,8 +245,8 @@ bool cache_t::lookup_in_remote_cache(const hasher_t::hash_t hash,
   PERF_START(RETRIEVE_CACHED_FILES);
   for (const auto& file_id : cached_entry.file_ids()) {
     const auto& target_path = expected_files.at(file_id).path();
-    debug::log(debug::INFO) << "Remote cache hit (" << hash.as_string() << "): " << file_id
-                            << " => " << target_path;
+    debug::log(debug::INFO) << "Remote cache hit (" << hash << "): " << file_id << " => "
+                            << target_path;
 
     if (create_target_dirs) {
       file::create_dir_with_parents(file::get_dir_part(target_path));

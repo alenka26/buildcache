@@ -26,21 +26,24 @@ namespace bcache {
 /// @brief A program wrapper MS Visual Studio.
 class msvc_wrapper_t : public program_wrapper_t {
 public:
-  msvc_wrapper_t(const string_list_t& args);
+  msvc_wrapper_t(const file::exe_path_t& exe_path, const string_list_t& args);
 
   bool can_handle_command() override;
 
 private:
   void resolve_args() override;
   string_list_t get_capabilities() override;
-  std::string preprocess_source() override;
+  std::map<std::string, expected_file_t> get_build_files() override;
+  std::string get_program_id() override;
   string_list_t get_relevant_arguments() override;
   std::map<std::string, std::string> get_relevant_env_vars() override;
-  std::string get_program_id() override;
-  std::map<std::string, expected_file_t> get_build_files() override;
+  string_list_t get_input_files() override;
+  std::string preprocess_source() override;
+  string_list_t get_implicit_input_files() override;
   sys::run_result_t run_for_miss() override;
 
   string_list_t m_resolved_args;
+  string_list_t m_implicit_input_files;
 };
 }  // namespace bcache
 #endif  // BUILDCACHE_MSVC_WRAPPER_HPP_

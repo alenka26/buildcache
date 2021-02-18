@@ -51,12 +51,13 @@ std::string s_config_file;
 // Configuration options.
 config::cache_accuracy_t s_accuracy = config::cache_accuracy_t::DEFAULT;
 bool s_cache_link_commands = false;
-bool s_compress = false;
+bool s_compress = true;
 config::compress_format_t s_compress_format = config::compress_format_t::DEFAULT;
 int32_t s_compress_level = -1;
 int32_t s_debug = -1;
 bool s_disable = false;
 std::string s_dir;
+bool s_direct_mode = false;
 bool s_hard_links = false;
 string_list_t s_hash_extra_files;
 std::string s_impersonate;
@@ -190,6 +191,13 @@ void load_from_file(const std::string& file_name) {
     const auto* node = cJSON_GetObjectItemCaseSensitive(root, "debug");
     if (cJSON_IsNumber(node) != 0) {
       s_debug = static_cast<int32_t>(node->valueint);
+    }
+  }
+
+  {
+    const auto* node = cJSON_GetObjectItemCaseSensitive(root, "direct_mode");
+    if (cJSON_IsBool(node) != 0) {
+      s_direct_mode = (cJSON_IsTrue(node) != 0);
     }
   }
 
@@ -423,6 +431,13 @@ void init() {
     }
 
     {
+      const env_var_t env("BUILDCACHE_DIRECT_MODE");
+      if (env) {
+        s_direct_mode = env.as_bool();
+      }
+    }
+
+    {
       const env_var_t env("BUILDCACHE_DISABLE");
       if (env) {
         s_disable = env.as_bool();
@@ -600,6 +615,10 @@ int32_t debug() {
 
 const std::string& dir() {
   return s_dir;
+}
+
+bool direct_mode() {
+  return s_direct_mode;
 }
 
 bool disable() {
