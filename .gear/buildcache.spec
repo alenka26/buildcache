@@ -1,6 +1,6 @@
 Name: buildcache
-Version: 0.23.0
-Release: alt2
+Version: 0.25.3
+Release: alt1
 
 Summary: a simple compiler accelerator
 License: Zlib
@@ -37,6 +37,9 @@ cd src
 %_bindir/buildcache
 
 %changelog
+* Thu Feb 18 2021 Alenka Glukhovskaya <alenka@altlinux.org> 0.25.3-alt1
+- new version 0.25.3
+
 * Fri Dec 04 2020 Ivan Savin <svn17@altlinux.org> 0.23.0-alt2
 - Add system library (xxhash) instead of bundled.
 
